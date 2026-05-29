@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { validateDisabledForModels } from "./advisor/config.js";
+import { validateDisabledForModels, validatePerExecutor } from "./advisor/config.js";
 import { loadAdvisorConfig, saveAdvisorConfig } from "./advisor/index.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
@@ -121,5 +121,74 @@ describe("validateDisabledForModels", () => {
 				"openai:gpt",
 			]),
 		).toEqual(["anthropic:opus", { model: "anthropic:sonnet", minEffort: "high" }, "openai:gpt"]);
+	});
+});
+
+describe("validatePerExecutor", () => {
+	it("returns [] when input is not an array", () => {
+		expect(validatePerExecutor(undefined)).toEqual([]);
+		expect(validatePerExecutor(null)).toEqual([]);
+		expect(validatePerExecutor("anthropic:opus")).toEqual([]);
+		expect(validatePerExecutor({ executor: "a:b", advisor: "c:d" })).toEqual([]);
+	});
+
+	it("keeps entries with non-empty executor + advisor and no effort", () => {
+		expect(validatePerExecutor([{ executor: "anthropic:opus", advisor: "openai:gpt-5.5" }])).toEqual([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5.5" },
+		]);
+	});
+
+	it("keeps entries with valid effort from EFFORT_ORDINAL", () => {
+		expect(
+			validatePerExecutor([
+				{ executor: "anthropic:opus", advisor: "openai:gpt-5.5", effort: "minimal" },
+				{ executor: "openai:gpt-5.5", advisor: "anthropic:opus", effort: "xhigh" },
+			]),
+		).toEqual([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5.5", effort: "minimal" },
+			{ executor: "openai:gpt-5.5", advisor: "anthropic:opus", effort: "xhigh" },
+		]);
+	});
+
+	it("drops entries with invalid effort", () => {
+		expect(validatePerExecutor([{ executor: "a:b", advisor: "c:d", effort: "bogus" }])).toEqual([]);
+	});
+
+	it("drops entries with empty or non-string executor", () => {
+		expect(
+			validatePerExecutor([
+				{ executor: "", advisor: "c:d" },
+				{ executor: 42, advisor: "c:d" },
+			]),
+		).toEqual([]);
+	});
+
+	it("drops entries with empty or non-string advisor", () => {
+		expect(
+			validatePerExecutor([
+				{ executor: "a:b", advisor: "" },
+				{ executor: "a:b", advisor: null },
+			]),
+		).toEqual([]);
+	});
+
+	it("drops null and non-object entries", () => {
+		expect(validatePerExecutor([null, 42, true, undefined, { executor: "a:b", advisor: "c:d" }])).toEqual([
+			{ executor: "a:b", advisor: "c:d" },
+		]);
+	});
+
+	it("preserves order of valid entries while dropping invalid", () => {
+		expect(
+			validatePerExecutor([
+				{ executor: "anthropic:opus", advisor: "openai:gpt-5.5", effort: "high" },
+				{ executor: "", advisor: "x:y" },
+				{ executor: "openai:gpt-5.5", advisor: "anthropic:opus" },
+				{ executor: "google:gemini", advisor: "" },
+			]),
+		).toEqual([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5.5", effort: "high" },
+			{ executor: "openai:gpt-5.5", advisor: "anthropic:opus" },
+		]);
 	});
 });

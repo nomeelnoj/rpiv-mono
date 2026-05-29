@@ -13,11 +13,21 @@ const ADVISOR_CONFIG_PATH = configPath("rpiv-advisor", "advisor.json");
 
 export type DisabledForModelsEntry = string | { model: string; minEffort?: ThinkingLevel };
 
+export interface PerExecutorEntry {
+	/** Executor model key ("provider:id") this entry applies to. */
+	executor: string;
+	/** Advisor model key ("provider:id") to use when the executor matches. */
+	advisor: string;
+	/** Optional reasoning effort for the advisor side-call. Falls back to top-level `effort`. */
+	effort?: ThinkingLevel;
+}
+
 interface AdvisorConfig {
 	modelKey?: string;
 	effort?: ThinkingLevel;
 	guidance?: GuidanceFields;
 	disabledForModels?: DisabledForModelsEntry[];
+	perExecutor?: PerExecutorEntry[];
 }
 
 export function loadAdvisorConfig(): AdvisorConfig {
@@ -32,6 +42,27 @@ export function validateDisabledForModels(value: unknown): DisabledForModelsEntr
 		const obj = entry as Record<string, unknown>;
 		if (typeof obj.model !== "string" || obj.model.length === 0) return false;
 		if (obj.minEffort !== undefined && !EFFORT_ORDINAL.includes(obj.minEffort as ThinkingLevel)) return false;
+		return true;
+	});
+}
+
+/**
+ * Validate `perExecutor` entries from an unknown value.
+ *
+ * Each entry must be an object with non-empty string `executor` and `advisor`
+ * fields and an optional `effort` from EFFORT_ORDINAL. Bad shapes are dropped
+ * silently; valid entries preserve input order. Order matters: the resolver
+ * picks the first matching entry, so configs can list more-specific entries
+ * before fallbacks.
+ */
+export function validatePerExecutor(value: unknown): PerExecutorEntry[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((entry): entry is PerExecutorEntry => {
+		if (!entry || typeof entry !== "object") return false;
+		const obj = entry as Record<string, unknown>;
+		if (typeof obj.executor !== "string" || obj.executor.length === 0) return false;
+		if (typeof obj.advisor !== "string" || obj.advisor.length === 0) return false;
+		if (obj.effort !== undefined && !EFFORT_ORDINAL.includes(obj.effort as ThinkingLevel)) return false;
 		return true;
 	});
 }

@@ -9,6 +9,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - Type-to-filter fuzzy search in the `/advisor` model and reasoning-level pickers — start typing to narrow a long model list, with contiguous-run and word-boundary ranking; matches both the model name and the `provider:id` key. ([#50](https://github.com/juicesharp/rpiv-mono/issues/50))
+- `perExecutor` config field — route specific executor models to specific advisor models. List `{ executor, advisor, effort? }` entries in `~/.config/rpiv-advisor/advisor.json`; when the active executor matches, the advisor side-call uses the override model (and optional effort) instead of the default. Falls back silently to the default advisor on no-match or registry-miss. `disabledForModels` still wins — if an executor is blocked, the tool is stripped before any routing happens.
 
 ## [1.15.0] - 2026-05-28
 
