@@ -5,10 +5,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./advisor-ui.js", () => ({
 	showAdvisorPicker: vi.fn(),
 	showEffortPicker: vi.fn(),
+	showScopePicker: vi.fn(),
+	showRouteListPicker: vi.fn(),
+	showRouteExecutorPicker: vi.fn(),
+	showRouteAdvisorPicker: vi.fn(),
+	showRouteEffortPicker: vi.fn(),
+	showRouteActionPicker: vi.fn(),
 }));
 
 import {
 	ADVISOR_TOOL_NAME,
+	findPerExecutorOverride,
 	getAdvisorEffort,
 	getAdvisorModel,
 	registerAdvisorBeforeAgentStart,
@@ -16,10 +23,30 @@ import {
 	registerModelSelectHandler,
 	registerThinkingLevelSelectHandler,
 	restoreAdvisorState,
+	savePerExecutor,
 	setAdvisorModel,
 	setDisabledForModels,
 } from "./advisor/index.js";
-import { showAdvisorPicker, showEffortPicker } from "./advisor-ui.js";
+import {
+	ADD_ROUTE_VALUE,
+	CONFIRM_RESET_VALUE,
+	INHERIT_VALUE,
+	NO_ADVISOR_VALUE,
+	REMOVE_VALUE,
+	RESET_ALL_ROUTES_VALUE,
+	SCOPE_DEFAULT,
+	SCOPE_ROUTES,
+} from "./advisor/messages.js";
+import {
+	showAdvisorPicker,
+	showEffortPicker,
+	showRouteActionPicker,
+	showRouteAdvisorPicker,
+	showRouteEffortPicker,
+	showRouteExecutorPicker,
+	showRouteListPicker,
+	showScopePicker,
+} from "./advisor-ui.js";
 
 const modelA = { provider: "anthropic", id: "opus", name: "Opus" } as unknown as Model<Api>;
 const modelR = {
@@ -33,6 +60,16 @@ const modelBlocked = { provider: "anthropic", id: "sonnet", name: "Sonnet" } as 
 beforeEach(() => {
 	vi.mocked(showAdvisorPicker).mockReset();
 	vi.mocked(showEffortPicker).mockReset();
+	vi.mocked(showScopePicker).mockReset();
+	vi.mocked(showRouteListPicker).mockReset();
+	vi.mocked(showRouteExecutorPicker).mockReset();
+	vi.mocked(showRouteAdvisorPicker).mockReset();
+	vi.mocked(showRouteEffortPicker).mockReset();
+	vi.mocked(showRouteActionPicker).mockReset();
+	// Default: scope picker routes to the default-advisor branch so the many
+	// existing tests that mock showAdvisorPicker continue to work without change.
+	// Tests that exercise scope routing can override with mockResolvedValueOnce.
+	vi.mocked(showScopePicker).mockResolvedValue(SCOPE_DEFAULT);
 });
 
 function register() {
@@ -657,5 +694,370 @@ describe("restoreAdvisorState — effort-aware blocklist", () => {
 		restoreAdvisorState(ctx as never, pi);
 		expect(getAdvisorModel()).toBe(modelA);
 		expect(pi.setActiveTools).toHaveBeenCalledWith(expect.arrayContaining([ADVISOR_TOOL_NAME]));
+	});
+});
+
+// ── Additional model for route tests ─────────────────────────────────────────
+const modelGpt = { provider: "openai", id: "gpt-5", name: "GPT-5" } as unknown as Model<Api>;
+
+// ── Scope picker ──────────────────────────────────────────────────────────────
+
+describe("/advisor — scope picker", () => {
+	it("null scope → no-op (no other pickers called, no notify)", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(showAdvisorPicker).not.toHaveBeenCalled();
+		expect(showRouteListPicker).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("SCOPE_DEFAULT routes to showAdvisorPicker", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_DEFAULT);
+		vi.mocked(showAdvisorPicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(showAdvisorPicker).toHaveBeenCalledOnce();
+		expect(showRouteListPicker).not.toHaveBeenCalled();
+	});
+
+	it("SCOPE_ROUTES routes to showRouteListPicker", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(showRouteListPicker).toHaveBeenCalledOnce();
+		expect(showAdvisorPicker).not.toHaveBeenCalled();
+	});
+});
+
+// ── Routes — add route ────────────────────────────────────────────────────────
+
+describe("/advisor — routes — add route", () => {
+	it("non-reasoning advisor: saves route, no effort picker, notifies", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const route = findPerExecutorOverride(modelA);
+		expect(route).toMatchObject({ executor: "anthropic:opus", advisor: "anthropic:opus" });
+		expect(route?.effort).toBeUndefined();
+		expect(showRouteEffortPicker).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Route saved"), "info");
+	});
+
+	it("reasoning advisor + level: saves entry with effort", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus-thinking");
+		vi.mocked(showRouteEffortPicker).mockResolvedValueOnce("medium");
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const route = findPerExecutorOverride(modelA);
+		expect(route).toMatchObject({ executor: "anthropic:opus", advisor: "anthropic:opus-thinking", effort: "medium" });
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("medium"), "info");
+	});
+
+	it("inherit omits effort from entry and shows '(inherit)' in notification", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus-thinking");
+		vi.mocked(showRouteEffortPicker).mockResolvedValueOnce(INHERIT_VALUE);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const route = findPerExecutorOverride(modelA);
+		expect(route).toBeDefined();
+		expect(route?.effort).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("(inherit)"), "info");
+	});
+
+	it("executor picker items do NOT include the No-advisor sentinel", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce(null); // cancel
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const [, items] = vi.mocked(showRouteExecutorPicker).mock.calls[0] as [unknown, { value: string }[]];
+		expect(items.every((item) => item.value !== NO_ADVISOR_VALUE)).toBe(true);
+	});
+
+	it("advisor picker items do NOT include the No-advisor sentinel", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce(null); // cancel
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		const [, items] = vi.mocked(showRouteAdvisorPicker).mock.calls[0] as [unknown, { value: string }[]];
+		expect(items.every((item) => item.value !== NO_ADVISOR_VALUE)).toBe(true);
+	});
+
+	it("cancel executor picker → no-op", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("cancel advisor picker → no-op", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("cancel effort picker → no-op", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus-thinking");
+		vi.mocked(showRouteEffortPicker).mockResolvedValueOnce(null);
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+});
+
+// ── Routes — edit route ───────────────────────────────────────────────────────
+
+describe("/advisor — routes — edit route", () => {
+	it("edit action re-runs full flow and upserts in place (preserves order)", async () => {
+		const { readFileSync: rfs, mkdirSync: mds, writeFileSync: wfs } = await import("node:fs");
+		const { dirname: dn, join: j } = await import("node:path");
+		const cfgPath = j(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mds(dn(cfgPath), { recursive: true });
+		wfs(
+			cfgPath,
+			JSON.stringify({
+				perExecutor: [
+					{ executor: "anthropic:opus", advisor: "openai:gpt-5" },
+					{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+				],
+			}),
+		);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus"); // select first route
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce("edit");
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus"); // keep executor
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus-thinking"); // change advisor
+		vi.mocked(showRouteEffortPicker).mockResolvedValueOnce("medium");
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelR, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		const saved = JSON.parse(rfs(cfgPath, "utf-8"));
+		expect(saved.perExecutor).toHaveLength(2);
+		expect(saved.perExecutor[0]).toMatchObject({
+			executor: "anthropic:opus",
+			advisor: "anthropic:opus-thinking",
+			effort: "medium",
+		});
+		expect(saved.perExecutor[1].executor).toBe("openai:gpt-5"); // second untouched
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Route saved"), "info");
+	});
+
+	it("cancel action picker → no-op", async () => {
+		const { mkdirSync: mds, writeFileSync: wfs } = await import("node:fs");
+		const { dirname: dn, join: j } = await import("node:path");
+		const cfgPath = j(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mds(dn(cfgPath), { recursive: true });
+		wfs(cfgPath, JSON.stringify({ perExecutor: [{ executor: "anthropic:opus", advisor: "openai:gpt-5" }] }));
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(null);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+});
+
+// ── Routes — remove route ─────────────────────────────────────────────────────
+
+describe("/advisor — routes — remove route", () => {
+	it("remove action saves without the entry and notifies", async () => {
+		const { mkdirSync: mds, writeFileSync: wfs } = await import("node:fs");
+		const { dirname: dn, join: j } = await import("node:path");
+		const cfgPath = j(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mds(dn(cfgPath), { recursive: true });
+		wfs(
+			cfgPath,
+			JSON.stringify({
+				perExecutor: [
+					{ executor: "anthropic:opus", advisor: "openai:gpt-5" },
+					{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+				],
+			}),
+		);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(REMOVE_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		// In-memory cache must not have the removed entry
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Route removed"), "info");
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("anthropic:opus"), "info");
+	});
+
+	it("findPerExecutorOverride returns undefined immediately after remove (cache updated)", async () => {
+		savePerExecutor([{ executor: "anthropic:opus", advisor: "openai:gpt-5" }]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(REMOVE_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+	});
+});
+
+// ── Routes — reset all ────────────────────────────────────────────────────────
+
+describe("/advisor — routes — reset all", () => {
+	it("confirm → clears all routes, notifies", async () => {
+		savePerExecutor([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5" },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(RESET_ALL_ROUTES_VALUE);
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(CONFIRM_RESET_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("cleared"), "info");
+	});
+
+	it("cancel reset → no change, no notify", async () => {
+		const { readFileSync: rfs, mkdirSync: mds } = await import("node:fs");
+		const { dirname: dn, join: j } = await import("node:path");
+		const cfgPath = j(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mds(dn(cfgPath), { recursive: true });
+		savePerExecutor([{ executor: "anthropic:opus", advisor: "openai:gpt-5" }]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(RESET_ALL_ROUTES_VALUE);
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce("cancel");
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		// Check the config file was not modified (in-memory cache is not populated
+		// by savePerExecutor alone — the command never calls setPerExecutor on cancel)
+		const saved = JSON.parse(rfs(cfgPath, "utf-8"));
+		expect(saved.perExecutor).toHaveLength(1);
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+
+	it("reset with no existing routes skips confirm picker", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(RESET_ALL_ROUTES_VALUE);
+		// No routes in config → confirm picker should not be shown
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(showRouteActionPicker).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).not.toHaveBeenCalled();
+	});
+});
+
+// ── Routes — persist failure (I2) ────────────────────────────────────────────
+
+describe("/advisor — routes — persist failure (review I2)", () => {
+	it("add route: save failure → notify error, cache not updated", async () => {
+		if (process.platform === "win32") return;
+		const { mkdirSync, rmSync } = await import("node:fs");
+		const { dirname, join } = await import("node:path");
+		const cfgPath = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mkdirSync(dirname(cfgPath), { recursive: true });
+		mkdirSync(cfgPath, { recursive: true }); // EISDIR trick
+		try {
+			vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+			vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE);
+			vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+			vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+
+			const { captured } = register();
+			const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+			await captured.commands.get("advisor")?.handler("", ctx as never);
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to save"), "error");
+			// Cache must remain empty — setPerExecutor not called
+			expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		} finally {
+			rmSync(cfgPath, { recursive: true, force: true });
+		}
+	});
+
+	it("remove route: save failure → notify error, no Route-removed notify", async () => {
+		if (process.platform === "win32") return;
+		const { mkdirSync, rmSync, chmodSync, writeFileSync } = await import("node:fs");
+		const { dirname, join } = await import("node:path");
+		const cfgPath = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
+		mkdirSync(dirname(cfgPath), { recursive: true });
+		// Write a valid config so loadAdvisorConfig can read the routes.
+		writeFileSync(
+			cfgPath,
+			JSON.stringify({ perExecutor: [{ executor: "anthropic:opus", advisor: "openai:gpt-5" }] }),
+		);
+		// Make the file read-only so saveJsonConfig fails on write while still readable.
+		chmodSync(cfgPath, 0o444);
+		try {
+			vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+			vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus");
+			vi.mocked(showRouteActionPicker).mockResolvedValueOnce(REMOVE_VALUE);
+
+			const { captured } = register();
+			const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+			await captured.commands.get("advisor")?.handler("", ctx as never);
+
+			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to save"), "error");
+			expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("Route removed"), "info");
+		} finally {
+			chmodSync(cfgPath, 0o600); // restore before setup.ts cleanup
+			rmSync(cfgPath, { force: true });
+		}
 	});
 });

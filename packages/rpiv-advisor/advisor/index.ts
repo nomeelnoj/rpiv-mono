@@ -24,7 +24,7 @@
  */
 
 export { registerAdvisorCommand } from "./command.js";
-export { loadAdvisorConfig, type PerExecutorEntry, saveAdvisorConfig } from "./config.js";
+export { loadAdvisorConfig, type PerExecutorEntry, saveAdvisorConfig, savePerExecutor } from "./config.js";
 export { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 export {
 	registerAdvisorBeforeAgentStart,

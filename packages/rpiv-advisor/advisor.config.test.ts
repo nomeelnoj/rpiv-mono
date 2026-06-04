@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { dirname, join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { validateDisabledForModels, validatePerExecutor } from "./advisor/config.js";
-import { loadAdvisorConfig, saveAdvisorConfig } from "./advisor/index.js";
+import { loadAdvisorConfig, saveAdvisorConfig, savePerExecutor } from "./advisor/index.js";
 
 const CONFIG_PATH = join(process.env.HOME!, ".config", "rpiv-advisor", "advisor.json");
 
@@ -190,5 +190,74 @@ describe("validatePerExecutor", () => {
 			{ executor: "anthropic:opus", advisor: "openai:gpt-5.5", effort: "high" },
 			{ executor: "openai:gpt-5.5", advisor: "anthropic:opus" },
 		]);
+	});
+});
+
+describe("savePerExecutor", () => {
+	it("writes entries and they round-trip through loadAdvisorConfig", () => {
+		const entries = [
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5", effort: "high" as const },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		];
+		expect(savePerExecutor(entries)).toBe(true);
+		expect(loadAdvisorConfig().perExecutor).toEqual(entries);
+	});
+
+	it("preserves existing modelKey, effort, guidance, and disabledForModels", () => {
+		saveAdvisorConfig("anthropic:opus", "medium");
+		const entries = [{ executor: "openai:gpt-5", advisor: "anthropic:opus" }];
+		savePerExecutor(entries);
+		const cfg = loadAdvisorConfig();
+		expect(cfg.modelKey).toBe("anthropic:opus");
+		expect(cfg.effort).toBe("medium");
+		expect(cfg.perExecutor).toEqual(entries);
+	});
+
+	it("deletes perExecutor key when entries is empty", () => {
+		savePerExecutor([{ executor: "a:b", advisor: "c:d" }]);
+		savePerExecutor([]);
+		const parsed = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		expect("perExecutor" in parsed).toBe(false);
+	});
+
+	it("returns false on write failure (EISDIR trick)", () => {
+		if (process.platform === "win32") return;
+		const { mkdirSync: mkdir, rmSync } = require("node:fs");
+		mkdir(CONFIG_PATH, { recursive: true });
+		try {
+			expect(savePerExecutor([{ executor: "a:b", advisor: "c:d" }])).toBe(false);
+		} finally {
+			rmSync(CONFIG_PATH, { recursive: true, force: true });
+		}
+	});
+
+	it("upsert replace-in-place: updating executor keeps its position", () => {
+		const initial = [
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5", effort: "high" as const },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		];
+		savePerExecutor(initial);
+		// Simulate upsert: replace first entry in place
+		const updated = [
+			{ executor: "anthropic:opus", advisor: "anthropic:opus-thinking", effort: "medium" as const },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		];
+		savePerExecutor(updated);
+		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		expect(saved.perExecutor[0].executor).toBe("anthropic:opus");
+		expect(saved.perExecutor[0].advisor).toBe("anthropic:opus-thinking");
+		expect(saved.perExecutor[0].effort).toBe("medium");
+		expect(saved.perExecutor[1].executor).toBe("openai:gpt-5");
+		expect(saved.perExecutor).toHaveLength(2);
+	});
+
+	it("upsert append: new executor is added at the end", () => {
+		const initial = [{ executor: "anthropic:opus", advisor: "openai:gpt-5" }];
+		savePerExecutor(initial);
+		const appended = [...initial, { executor: "openai:gpt-5", advisor: "anthropic:opus" }];
+		savePerExecutor(appended);
+		const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+		expect(saved.perExecutor).toHaveLength(2);
+		expect(saved.perExecutor[1].executor).toBe("openai:gpt-5");
 	});
 });

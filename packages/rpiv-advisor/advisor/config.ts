@@ -80,6 +80,25 @@ export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel
 	return saveJsonConfig(ADVISOR_CONFIG_PATH, config);
 }
 
+/**
+ * Persist a new `perExecutor` routing table. Spreads existing config to
+ * preserve `modelKey`/`effort`/`guidance`/`disabledForModels`. Deletes the
+ * `perExecutor` key entirely when `entries` is empty (no key vs `[]` keeps
+ * the file clean). Returns true on success, false on write failure.
+ * Persist-before-mutate discipline: callers must call `setPerExecutor` only
+ * after this returns true (review I2).
+ */
+export function savePerExecutor(entries: PerExecutorEntry[]): boolean {
+	const existing = loadAdvisorConfig();
+	const config: AdvisorConfig = { ...existing };
+	if (entries.length > 0) {
+		config.perExecutor = entries;
+	} else {
+		delete config.perExecutor;
+	}
+	return saveJsonConfig(ADVISOR_CONFIG_PATH, config);
+}
+
 export function parseModelKey(key: string): { provider: string; modelId: string } | undefined {
 	const idx = key.indexOf(":");
 	if (idx < 1) return undefined;
