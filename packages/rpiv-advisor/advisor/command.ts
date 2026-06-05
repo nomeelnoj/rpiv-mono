@@ -6,8 +6,7 @@
  * and route save helpers persist before mutating in-memory state (review I2).
  */
 
-import type { Api, Model } from "@earendil-works/pi-ai";
-import { getSupportedThinkingLevels, type ThinkingLevel } from "@earendil-works/pi-ai";
+import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import {
@@ -50,6 +49,7 @@ import {
 } from "./messages.js";
 import { isExecutorBlocked, setPerExecutor } from "./policy.js";
 import { getAdvisorEffort, getAdvisorModel, setAdvisorEffort, setAdvisorModel } from "./state.js";
+import { getSupportedThinkingLevels } from "./thinking-compat.js";
 
 // ── Item builders ─────────────────────────────────────────────────────────────
 

@@ -9,7 +9,21 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import type { ToolInfo } from "@earendil-works/pi-coding-agent";
+
+// Tool inventory item. Upstream Pi's `getAllTools()` returns rich objects
+// ({ name, description, parameters }); omp's `getAllTools()` returns `string[]`
+// (tool names only). Accept both so the inventory block degrades gracefully to
+// a name-only listing under omp while staying rich under upstream Pi.
+interface ToolInfoLike {
+	name: string;
+	description?: string;
+	parameters?: unknown;
+}
+type ToolInventoryItem = ToolInfoLike | string;
+
+function toolName(tool: ToolInventoryItem): string {
+	return typeof tool === "string" ? tool : tool.name;
+}
 
 const ADVISOR_STATE_KEY = Symbol.for("rpiv-advisor");
 
@@ -50,20 +64,23 @@ export function stableStringify(value: unknown): string {
 	return `{${entries.join(",")}}`;
 }
 
-function buildInventoryBlock(tools: ToolInfo[]): string {
+function buildInventoryBlock(tools: ToolInventoryItem[]): string {
 	// Omit `sourceInfo` — its `path` field is install-location-dependent and
 	// would bust cache parity across machines/reinstalls.
 	return tools
-		.map((t) => `### ${t.name}\n${t.description}\n\nParameters: ${stableStringify(t.parameters)}`)
+		.map((t) => {
+			if (typeof t === "string") return `### ${t}`;
+			return `### ${t.name}\n${t.description ?? ""}\n\nParameters: ${stableStringify(t.parameters ?? {})}`;
+		})
 		.join("\n\n---\n\n");
 }
 
 // Returns `undefined` when the registry is empty (no extensions loaded) so
 // callers can skip prepending an empty block that would still cost a cache unit.
-export function getInventoryMessage(tools: ToolInfo[]): Message | undefined {
+export function getInventoryMessage(tools: ToolInventoryItem[]): Message | undefined {
 	if (tools.length === 0) return undefined;
-	const sorted = [...tools].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-	const signature = sorted.map((t) => t.name).join("|");
+	const sorted = [...tools].sort((a, b) => toolName(a).localeCompare(toolName(b)));
+	const signature = sorted.map(toolName).join("|");
 	const state = getAdvisorRuntimeState();
 	if (state.inventorySignature === signature && state.inventoryMessage) {
 		return state.inventoryMessage;

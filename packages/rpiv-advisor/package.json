@@ -40,6 +40,11 @@
 			"./index.ts"
 		]
 	},
+	"omp": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
 	"dependencies": {
 		"@juicesharp/rpiv-config": "^1.15.0"
 	},

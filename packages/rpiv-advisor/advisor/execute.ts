@@ -51,6 +51,35 @@ import { getAdvisorEffort, getAdvisorModel } from "./state.js";
  * Disable-wins: callers strip the advisor tool when `isExecutorBlocked` returns
  * true, so this resolver never sees blocked executors during normal flow.
  */
+/**
+ * Resolve the advisor's API key across runtimes. Upstream Pi exposes
+ * `modelRegistry.getApiKeyAndHeaders(model)` (returning an ok/error envelope
+ * with apiKey + headers); omp's ModelRegistry exposes `getApiKey(model)`
+ * returning the key directly (auth headers are applied by the provider
+ * transport from the model's provider config). Detect whichever is present.
+ */
+async function getAdvisorAuth(
+	ctx: ExtensionContext,
+	advisor: Model<Api>,
+): Promise<{ ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }> {
+	const registry = ctx.modelRegistry as unknown as {
+		getApiKeyAndHeaders?: (
+			model: Model<Api>,
+		) => Promise<{ ok: true; apiKey?: string; headers?: Record<string, string> } | { ok: false; error: string }>;
+		getApiKey?: (model: Model<Api>, sessionId?: string) => Promise<string | undefined>;
+	};
+
+	if (typeof registry.getApiKeyAndHeaders === "function") {
+		return registry.getApiKeyAndHeaders(advisor);
+	}
+	if (typeof registry.getApiKey === "function") {
+		const sessionId = ctx.sessionManager.getSessionId?.();
+		const apiKey = await registry.getApiKey(advisor, sessionId ?? undefined);
+		return { ok: true, apiKey };
+	}
+	return { ok: false, error: "Model registry does not expose an API-key resolver" };
+}
+
 function resolveAdvisor(ctx: ExtensionContext): { advisor: Model<Api> | undefined; effort: ThinkingLevel | undefined } {
 	const override = findPerExecutorOverride(ctx.model);
 	if (override) {
@@ -119,7 +148,7 @@ export async function executeAdvisor(
 	}
 	const advisorLabel = `${advisor.provider}:${advisor.id}`;
 
-	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(advisor);
+	const auth = await getAdvisorAuth(ctx, advisor);
 	if (!auth.ok) {
 		return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, auth.error), auth.error);
 	}
@@ -151,7 +180,12 @@ export async function executeAdvisor(
 			advisor,
 			// `tools: []` reaffirms the "never calls tools" contract even when
 			// `messages` contains prior toolCall/toolResult blocks (btw.ts:235).
-			{ systemPrompt: ADVISOR_SYSTEM_PROMPT, messages, tools: [] },
+			// omp's Context.systemPrompt is string[]; upstream Pi typed it as a bare
+			// string. We send an array (correct for the omp runtime this fork targets)
+			// and cast so the upstream `string` type still checks.
+			{ systemPrompt: [ADVISOR_SYSTEM_PROMPT] as unknown as string, messages, tools: [] },
+			// `effort` is ThinkingLevel (minimal..xhigh, never "off"), which matches
+			// omp's Effort enum values 1:1, so it passes through unchanged.
 			{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effort },
 		);
 

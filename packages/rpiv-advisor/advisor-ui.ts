@@ -66,6 +66,10 @@ function selectListTheme(theme: Theme) {
 		description: (t: string) => theme.fg("muted", t),
 		scrollInfo: (t: string) => theme.fg("dim", t),
 		noMatch: (t: string) => theme.fg("warning", t),
+		// omp's SelectList renders `theme.symbols.cursor`; @earendil's SelectList
+		// ignores this field. Source the cursor from the live theme when present
+		// (omp runtime), else fall back to a default glyph (test mocks / @earendil).
+		symbols: { cursor: (theme as unknown as { nav?: { cursor?: string } }).nav?.cursor ?? "›" },
 	};
 }
 
