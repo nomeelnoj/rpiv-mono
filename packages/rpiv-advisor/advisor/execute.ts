@@ -20,6 +20,7 @@ import { parseModelKey } from "./config.js";
 import { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 import { getInventoryMessage } from "./inventory.js";
 import {
+	ADVISOR_CHAIN_PRIOR_INTRO,
 	ERR_ABORTED_DETAIL,
 	ERR_CALL_ABORTED,
 	ERR_EMPTY_RESPONSE,
@@ -31,9 +32,10 @@ import {
 	errMisconfigured,
 	errNoApiKey,
 	errNoApiKeyDetail,
+	formatPriorAdvisorResponse,
 	msgConsulting,
 } from "./messages.js";
-import { findPerExecutorOverride } from "./policy.js";
+import { type ChainNode, findPerExecutorOverride, MAX_CHAIN_DEPTH, resolveAdvisorChain } from "./policy.js";
 import { ADVISOR_SYSTEM_PROMPT } from "./prompt.js";
 import { getAdvisorEffort, getAdvisorModel } from "./state.js";
 
@@ -101,7 +103,74 @@ function buildErrorResult(
 	return buildAdvisorResult({ text: userText, effort, advisorLabel, errorMessage });
 }
 
+/** Optional chain-walk controls passed through from the tool call. */
+export interface AdvisorCallParams {
+	depth?: number;
+	target?: string;
+}
+
+/**
+ * Build the curated advisor branch once: the (cached) tool-inventory message and
+ * the massaged executor branch. Both single-hop and chain walks share this so
+ * every tier sees the same inventory + branch; chain tiers only prepend a
+ * prior-responses message between the inventory and the branch.
+ */
+function buildAdvisorBranch(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+): {
+	inventoryMessage: Message | undefined;
+	branchMessages: Message[];
+} {
+	const { messages: sessionMessages } = buildSessionContext(
+		ctx.sessionManager.getEntries(),
+		ctx.sessionManager.getLeafId(),
+	);
+	const branchMessages = ensureUserTailForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages)));
+	const inventoryMessage = getInventoryMessage(pi.getAllTools());
+	return { inventoryMessage, branchMessages };
+}
+
+/** Extract and trim the text content of an advisor response. */
+function extractText(content: { type: string }[]): string {
+	return (content as { type: string; text?: string }[])
+		.filter((c): c is { type: "text"; text: string } => c.type === "text")
+		.map((c) => c.text)
+		.join("\n")
+		.trim();
+}
+
+/**
+ * Tool entry point. Dispatches to the single-hop path (default / `depth: 1` /
+ * no target) or the chain-walk path (`depth > 1` or `target`). The single-hop
+ * path is byte-for-byte the pre-chaining behavior, so the no-args call carries
+ * zero regression risk. A chain request that resolves to no hops also falls
+ * back to single-hop so `advisor({ depth: 2 })` with no route still helps.
+ */
 export async function executeAdvisor(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback<AdvisorDetails> | undefined,
+	params: AdvisorCallParams = {},
+): Promise<AgentToolResult<AdvisorDetails>> {
+	const target = params.target?.trim() || undefined;
+	const depthParam = params.depth;
+	const useChain = (depthParam !== undefined && depthParam > 1) || target !== undefined;
+	if (!useChain) {
+		return executeSingleHop(ctx, pi, signal, onUpdate);
+	}
+
+	const depth = Math.min(MAX_CHAIN_DEPTH, Math.max(1, depthParam ?? MAX_CHAIN_DEPTH));
+	const nodes = resolveAdvisorChain(ctx.model, depth, target, ctx.modelRegistry);
+	if (nodes.length === 0) {
+		// No chain available from this executor — preserve current useful behavior.
+		return executeSingleHop(ctx, pi, signal, onUpdate);
+	}
+	return walkChain(ctx, pi, nodes, signal, onUpdate);
+}
+
+async function executeSingleHop(
 	ctx: ExtensionContext,
 	pi: ExtensionAPI,
 	signal: AbortSignal | undefined,
@@ -133,12 +202,7 @@ export async function executeAdvisor(
 	// of replaying raw pre-compaction branch messages. convertToLlm is
 	// pass-through for user/assistant/toolResult (messages.js:111-114), so
 	// element refs are stable across calls via the session store.
-	const { messages: sessionMessages } = buildSessionContext(
-		ctx.sessionManager.getEntries(),
-		ctx.sessionManager.getLeafId(),
-	);
-	const branchMessages = ensureUserTailForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages)));
-	const inventoryMessage = getInventoryMessage(pi.getAllTools());
+	const { inventoryMessage, branchMessages } = buildAdvisorBranch(ctx, pi);
 	const messages: Message[] = inventoryMessage ? [inventoryMessage, ...branchMessages] : branchMessages;
 
 	onUpdate?.({
@@ -205,4 +269,129 @@ export async function executeAdvisor(
 		const message = err instanceof Error ? err.message : String(err);
 		return buildErrorResult(advisorLabel, effort, errCallThrew(message), message);
 	}
+}
+
+/**
+ * Synthetic `user` message that threads prior advisor responses into a deeper
+ * tier's context. Inserted after the inventory message and before the executor
+ * branch so the tier sees: tool inventory → prior advice → the conversation.
+ */
+function buildPriorResponsesMessage(prior: { label: string; text: string }[]): Message {
+	const body = prior.map((p, i) => formatPriorAdvisorResponse(i + 1, p.label, p.text)).join("\n\n");
+	return {
+		role: "user",
+		content: [{ type: "text", text: `${ADVISOR_CHAIN_PRIOR_INTRO}\n\n${body}` }],
+		timestamp: Date.now(),
+	};
+}
+
+/**
+ * Walk a resolved advisor chain sequentially. Each tier sees the same inventory
+ * + executor branch; tiers after the first also receive a prepended
+ * prior-responses message. The final completed tier's response is returned.
+ *
+ * Failure handling preserves single-hop semantics: at tier 1 a failure (auth,
+ * abort, error, empty, throw) returns that tier's normal envelope. After at
+ * least one successful tier, any later-tier failure returns the last completed
+ * tier's response — the partial chain output is still useful, so failures are
+ * not surfaced to the executor. Effort inheritance mirrors depth-1 resolution:
+ * tier 1's effective effort is `entry.effort ?? getAdvisorEffort()`, and deeper
+ * tiers use their own `entry.effort` or fall back to that tier-1 effort.
+ */
+async function walkChain(
+	ctx: ExtensionContext,
+	pi: ExtensionAPI,
+	nodes: ChainNode[],
+	signal: AbortSignal | undefined,
+	onUpdate: AgentToolUpdateCallback<AdvisorDetails> | undefined,
+): Promise<AgentToolResult<AdvisorDetails>> {
+	const { inventoryMessage, branchMessages } = buildAdvisorBranch(ctx, pi);
+	const firstTierEffort = nodes[0].effort ?? getAdvisorEffort();
+	const priorResponses: { label: string; text: string }[] = [];
+	let lastResult: AgentToolResult<AdvisorDetails> | undefined;
+
+	for (const node of nodes) {
+		const advisor = node.model;
+		const advisorLabel = `${advisor.provider}:${advisor.id}`;
+		const effort = node.effort ?? firstTierEffort;
+
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(advisor);
+		if (!auth.ok) {
+			return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, auth.error), auth.error);
+		}
+		if (!auth.apiKey) {
+			return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		}
+
+		const priorMessage = priorResponses.length > 0 ? buildPriorResponsesMessage(priorResponses) : undefined;
+		const messages: Message[] = [
+			...(inventoryMessage ? [inventoryMessage] : []),
+			...(priorMessage ? [priorMessage] : []),
+			...branchMessages,
+		];
+
+		onUpdate?.({
+			content: [{ type: "text", text: msgConsulting(advisorLabel, effort) }],
+			details: { advisorModel: advisorLabel, effort },
+		});
+
+		try {
+			const response = await completeSimple(
+				advisor,
+				{ systemPrompt: ADVISOR_SYSTEM_PROMPT, messages, tools: [] },
+				{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effort },
+			);
+
+			if (response.stopReason === "aborted") {
+				if (lastResult) return lastResult;
+				return buildAdvisorResult({
+					text: ERR_CALL_ABORTED,
+					effort,
+					advisorLabel,
+					usage: response.usage,
+					stopReason: response.stopReason,
+					errorMessage: response.errorMessage ?? ERR_ABORTED_DETAIL,
+				});
+			}
+
+			if (response.stopReason === "error") {
+				return buildAdvisorResult({
+					text: errCallFailed(response.errorMessage),
+					effort,
+					advisorLabel,
+					usage: response.usage,
+					stopReason: response.stopReason,
+					errorMessage: response.errorMessage,
+				});
+			}
+
+			const advisorText = extractText(response.content);
+			if (!advisorText) {
+				return buildAdvisorResult({
+					text: ERR_EMPTY_RESPONSE,
+					effort,
+					advisorLabel,
+					usage: response.usage,
+					stopReason: response.stopReason,
+					errorMessage: ERR_EMPTY_RESPONSE_DETAIL,
+				});
+			}
+
+			priorResponses.push({ label: advisorLabel, text: advisorText });
+			lastResult = buildAdvisorResult({
+				text: advisorText,
+				effort,
+				advisorLabel,
+				usage: response.usage,
+				stopReason: response.stopReason,
+			});
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			return buildErrorResult(advisorLabel, effort, errCallThrew(message), message);
+		}
+	}
+
+	// nodes is non-empty (guaranteed by caller) and every tier either returned
+	// early or set lastResult, so this is always defined.
+	return lastResult as AgentToolResult<AdvisorDetails>;
 }

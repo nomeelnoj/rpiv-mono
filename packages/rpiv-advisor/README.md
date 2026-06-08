@@ -19,7 +19,8 @@ Let the model ask a stronger model for a second opinion before it acts. `rpiv-ad
 - **Off by default** - the `advisor` tool is excluded until you pick a model; choose "No advisor" to disable.
 - **Per-executor blocklist** - list executor models in `disabledForModels` (in `advisor.json`) to strip the `advisor` tool when those models drive the session. Entries can be plain strings (block at any effort) or `{ "model": "<provider:id>", "minEffort": "<level>" }` to block only when the executor's effort meets or exceeds the threshold. Available levels, lowest to highest: `minimal`, `low`, `medium`, `high`, `xhigh`.
 - **Per-executor advisor routing** - list `{ "executor": "<provider:id>", "advisor": "<provider:id>", "effort"?: "<level>" }` entries in `perExecutor` (in `advisor.json`) to route specific executors to specific advisor models. Use it to pair models that critique each other well (e.g. opus reviews gpt-5.5, gpt-5.5 reviews opus) without re-picking via `/advisor` between sessions. Optional `effort` falls back to the top-level `effort`; on no-match or registry-miss the default advisor is used. `disabledForModels` still wins — a blocked executor never reaches routing.
-- **Zero-parameter handoff** - calling `advisor` forwards the full serialized conversation branch; no manual prompt needed.
+- **Advisor chain walking** - the `perExecutor` table also defines a chain: each model's `advisor` is the next hop. Call `advisor({ depth: N })` to walk up to N tiers, or `advisor({ target: "opus" })` to walk until a model matching that name or `provider:id` key is reached (target wins, bounded by depth). Each tier sees the conversation branch plus prior advisor responses; the final tier's reply is returned. Cycles and dead-ends terminate gracefully. `advisor()` with no arguments stays a single hop.
+- **Zero-parameter handoff** - calling `advisor()` with no arguments forwards the full serialized conversation branch; no manual prompt needed (chain walking via `depth`/`target` is opt-in).
 
 ## Install
 
@@ -40,9 +41,10 @@ The `advisor` tool is registered at load but excluded from active tools by
 default; selecting a model via `/advisor` enables it. Choose "No advisor" to
 disable.
 
-`advisor` takes zero parameters - calling it forwards the full serialized
-conversation branch to the advisor model, which returns guidance (plan,
-correction, or stop signal) that the executor consumes.
+Calling `advisor()` forwards the full serialized conversation branch to the
+advisor model, which returns guidance (plan, correction, or stop signal) that
+the executor consumes. The default call is a single hop; pass `depth` or
+`target` to walk the chain configured in `perExecutor` (see Features).
 
 ## Tool
 
@@ -51,8 +53,13 @@ correction, or stop signal) that the executor consumes.
 ### Schema
 
 ```ts
-advisor() // zero parameters
+advisor()                       // single hop (default, unchanged)
+advisor({ depth: 3 })           // walk up to 3 advisor tiers along the chain
+advisor({ target: "opus" })     // walk until a model named/keyed "opus" is reached
 ```
+
+- `depth?: integer` (1–10) - number of advisor tiers to walk along the `perExecutor` chain. Default 1.
+- `target?: string` - walk until a model whose name (case-insensitive partial) or `provider:id` key matches. Wins over `depth`; still bounded by it.
 
 The full conversation branch is auto-serialized from `ctx.sessionManager` - the LLM does not (and cannot) pass it explicitly.
 

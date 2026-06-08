@@ -74,3 +74,107 @@ describe("isModelBlocked", () => {
 		expect(isModelBlocked(opus, "high")).toBe(false);
 	});
 });
+
+import { resolveAdvisorChain, resolveChainLabels, setPerExecutor } from "./advisor/index.js";
+
+const SONNET = { provider: "x", id: "sonnet", name: "Claude Sonnet" } as unknown as Model<Api>;
+const KIMI = { provider: "k", id: "kimi", name: "Kimi K2" } as unknown as Model<Api>;
+const GPT = { provider: "g", id: "gpt", name: "GPT-5" } as unknown as Model<Api>;
+const OPUS = { provider: "o", id: "opus", name: "Claude Opus" } as unknown as Model<Api>;
+
+const REGISTRY = {
+	find: (provider: string, id: string) =>
+		[SONNET, KIMI, GPT, OPUS].find((m) => m.provider === provider && m.id === id),
+};
+
+describe("resolveAdvisorChain", () => {
+	beforeEach(() => setPerExecutor([]));
+
+	it("returns an empty array when no chain exists", () => {
+		expect(resolveAdvisorChain(SONNET, 3, undefined, REGISTRY)).toEqual([]);
+	});
+
+	it("returns an empty array when the executor is undefined", () => {
+		setPerExecutor([{ executor: "x:sonnet", advisor: "k:kimi" }]);
+		expect(resolveAdvisorChain(undefined, 3, undefined, REGISTRY)).toEqual([]);
+	});
+
+	it("walks up to the requested depth", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+			{ executor: "g:gpt", advisor: "o:opus" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 2, undefined, REGISTRY);
+		expect(nodes.map((n) => `${n.model.provider}:${n.model.id}`)).toEqual(["k:kimi", "g:gpt"]);
+	});
+
+	it("stops at a target match (partial name)", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+			{ executor: "g:gpt", advisor: "o:opus" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 10, "opus", REGISTRY);
+		expect(nodes.map((n) => n.model.id)).toEqual(["kimi", "gpt", "opus"]);
+	});
+
+	it("stops at a target match (full provider:id key)", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 10, "k:kimi", REGISTRY);
+		expect(nodes.map((n) => n.model.id)).toEqual(["kimi"]);
+	});
+
+	it("detects a cycle and stops before revisiting a model", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+			{ executor: "g:gpt", advisor: "k:kimi" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 10, undefined, REGISTRY);
+		expect(nodes.map((n) => n.model.id)).toEqual(["kimi", "gpt"]);
+	});
+
+	it("stops when the next advisor model is not in the registry", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "missing:model" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 10, undefined, REGISTRY);
+		expect(nodes.map((n) => n.model.id)).toEqual(["kimi"]);
+	});
+
+	it("clamps depth into the [1, MAX] range", () => {
+		setPerExecutor([{ executor: "x:sonnet", advisor: "k:kimi" }]);
+		expect(resolveAdvisorChain(SONNET, 0, undefined, REGISTRY).map((n) => n.model.id)).toEqual(["kimi"]);
+	});
+
+	it("carries each entry's effort override onto its node", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi", effort: "high" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+		]);
+		const nodes = resolveAdvisorChain(SONNET, 2, undefined, REGISTRY);
+		expect(nodes[0].effort).toBe("high");
+		expect(nodes[1].effort).toBeUndefined();
+	});
+});
+
+describe("resolveChainLabels", () => {
+	beforeEach(() => setPerExecutor([]));
+
+	it("returns model display names in walk order", () => {
+		setPerExecutor([
+			{ executor: "x:sonnet", advisor: "k:kimi" },
+			{ executor: "k:kimi", advisor: "g:gpt" },
+		]);
+		expect(resolveChainLabels(SONNET, REGISTRY)).toEqual(["Kimi K2", "GPT-5"]);
+	});
+
+	it("returns an empty array when there is no chain", () => {
+		expect(resolveChainLabels(SONNET, REGISTRY)).toEqual([]);
+	});
+});

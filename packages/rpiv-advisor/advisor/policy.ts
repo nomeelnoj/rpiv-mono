@@ -11,8 +11,22 @@
 
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type DisabledForModelsEntry, modelKey, type PerExecutorEntry } from "./config.js";
-import { EFFORT_ORDINAL } from "./messages.js";
+import { type DisabledForModelsEntry, modelKey, type PerExecutorEntry, parseModelKey } from "./config.js";
+import { EFFORT_ORDINAL, warnChainCycle } from "./messages.js";
+
+/** Hard cap on chain length — a safety rail, mirrored by the tool schema's `maximum`. */
+export const MAX_CHAIN_DEPTH = 10;
+
+/** One resolved hop in an advisor chain: the next advisor model + its optional effort override. */
+export interface ChainNode {
+	model: Model<Api>;
+	effort?: ThinkingLevel;
+}
+
+/** Minimal model-registry surface needed to resolve chain hops (matches `ctx.modelRegistry`). */
+interface ModelFinder {
+	find(provider: string, id: string): Model<Api> | undefined;
+}
 
 let disabledForModelsCache: DisabledForModelsEntry[] = [];
 let perExecutorCache: PerExecutorEntry[] = [];
@@ -35,6 +49,85 @@ export function findPerExecutorOverride(executor: Model<Api> | undefined): PerEx
 	if (!executor) return undefined;
 	const key = modelKey(executor);
 	return perExecutorCache.find((entry) => entry.executor === key);
+}
+
+/**
+ * Walk the chain implied by the perExecutor routing table starting from
+ * `executor`. Each hop resolves the current model's `advisor` entry and looks
+ * the next model up in the registry. The walk stops when: the depth cap is
+ * reached, the current model has no perExecutor entry, the next advisor key
+ * is not in the registry, the target matches, or a model key would be revisited
+ * (cycle). Returns the resolved hops in order (may be empty).
+ *
+ * `warnOnCycle` is true only for execution resolution — the description-label
+ * refresh re-walks the same table and must not spam warnings.
+ */
+function walkChainNodes(
+	executor: Model<Api> | undefined,
+	depth: number,
+	target: string | undefined,
+	registry: ModelFinder,
+	warnOnCycle: boolean,
+): ChainNode[] {
+	if (!executor) return [];
+	const nodes: ChainNode[] = [];
+	const visited = new Set<string>([modelKey(executor)]);
+	const limit = Math.min(MAX_CHAIN_DEPTH, Math.max(1, depth));
+	let current: Model<Api> = executor;
+	for (let i = 0; i < limit; i++) {
+		const entry = findPerExecutorOverride(current);
+		if (!entry) break;
+		const parsed = parseModelKey(entry.advisor);
+		const next = parsed ? registry.find(parsed.provider, parsed.modelId) : undefined;
+		if (!next) break;
+		const nextKey = modelKey(next);
+		if (visited.has(nextKey)) {
+			if (warnOnCycle) console.warn(warnChainCycle([...visited, nextKey]));
+			break;
+		}
+		nodes.push({ model: next, effort: entry.effort });
+		visited.add(nextKey);
+		if (target && matchesTarget(next, target)) break;
+		current = next;
+	}
+	return nodes;
+}
+
+/**
+ * Target matching: a full colon-form key (`provider:id`) equality OR a
+ * case-insensitive partial match against the model's display name. The first
+ * walk node that satisfies either is the target.
+ */
+function matchesTarget(model: Model<Api>, target: string): boolean {
+	if (modelKey(model) === target) return true;
+	const name = model.name ?? "";
+	return name.toLowerCase().includes(target.toLowerCase());
+}
+
+/**
+ * Resolve the advisor chain for an executor up to `depth` hops, stopping early
+ * on `target` match. Warns and terminates on cycles. Used by the chain-walk
+ * execution path; an empty result means the caller should fall back to the
+ * single-hop advisor path.
+ */
+export function resolveAdvisorChain(
+	executor: Model<Api> | undefined,
+	depth: number,
+	target: string | undefined,
+	registry: ModelFinder,
+): ChainNode[] {
+	return walkChainNodes(executor, depth, target, registry, true);
+}
+
+/**
+ * Resolve the full chain display labels for the current executor (model names
+ * in walk order). Used to build the dynamic tool-description suffix. Walks the
+ * full depth with no target and never warns on cycles.
+ */
+export function resolveChainLabels(executor: Model<Api> | undefined, registry: ModelFinder): string[] {
+	return walkChainNodes(executor, MAX_CHAIN_DEPTH, undefined, registry, false).map(
+		(n) => n.model.name ?? modelKey(n.model),
+	);
 }
 
 export function isModelBlocked(model: Model<Api> | undefined, thinkingLevel?: string): boolean {

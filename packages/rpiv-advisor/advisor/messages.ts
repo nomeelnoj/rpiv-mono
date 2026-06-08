@@ -73,3 +73,35 @@ export const MSG_ROUTES_RESET = "All per-executor routes cleared";
 
 export const msgConsulting = (label: string, effort: ThinkingLevel | undefined) =>
 	`Consulting advisor (${label}${effort ? `, ${effort}` : ""})…`;
+
+// ── Chain walking ─────────────────────────────────────────────────────────────
+// The advisor tool can walk a chain of advisors implied by the perExecutor
+// routing table (each model's `advisor` entry is the next node). These strings
+// build the dynamic tool-description suffix, the per-tier prior-response context
+// message, and the cycle-termination warning.
+
+// Intro line for the synthetic user message that threads prior advisor responses
+// into deeper-tier calls.
+export const ADVISOR_CHAIN_PRIOR_INTRO = "Prior advisor responses in this escalation chain:";
+
+// One prior-response block: `[Advisor 2 — provider:id]\n{text}`.
+export const formatPriorAdvisorResponse = (index: number, label: string, text: string) =>
+	`[Advisor ${index} — ${label}]\n${text}`;
+
+// Dynamic description suffix appended when a chain exists for the current
+// executor. Empty string when there is no chain (caller omits it).
+export const buildChainSuffix = (chainLabels: string[]): string => {
+	if (chainLabels.length === 0) return "";
+	const last = chainLabels[chainLabels.length - 1];
+	const first = chainLabels[0];
+	return (
+		` Chain available from current executor: ${chainLabels.join(" → ")}.` +
+		` Pass depth (e.g. depth:2) to walk N tiers, or target (e.g. target:"${last}")` +
+		` to walk until a specific model. Default: depth 1 (one hop to ${first}).`
+	);
+};
+
+// Cycle-termination warning — logged (not surfaced to the executor) when a model
+// key would be revisited during the walk.
+export const warnChainCycle = (keys: string[]) =>
+	`Advisor chain cycle detected; stopping before revisit: ${keys.join(" → ")}`;

@@ -48,7 +48,8 @@ import {
 	SCOPE_ROUTES,
 	XHIGH_EFFORT_LEVEL,
 } from "./messages.js";
-import { isExecutorBlocked, setPerExecutor } from "./policy.js";
+import { isExecutorBlocked, resolveChainLabels, setPerExecutor } from "./policy.js";
+import { refreshAdvisorToolDescription } from "./register.js";
 import { getAdvisorEffort, getAdvisorModel, setAdvisorEffort, setAdvisorModel } from "./state.js";
 
 // ── Item builders ─────────────────────────────────────────────────────────────
@@ -130,6 +131,15 @@ function buildRouteListItems(routes: PerExecutorEntry[]): SelectItem[] {
 	items.push({ value: ADD_ROUTE_VALUE, label: "Add route" });
 	items.push({ value: RESET_ALL_ROUTES_VALUE, label: "Reset all routes" });
 	return items;
+}
+
+/**
+ * After a route table mutation, re-sync the advisor tool description so a chain
+ * involving the current executor is reflected immediately (not just on the next
+ * model_select). Guarded against redundant re-registration inside the refresh.
+ */
+function refreshRoutesDescription(pi: ExtensionAPI, ctx: ExtensionContext): void {
+	refreshAdvisorToolDescription(pi, resolveChainLabels(ctx.model, ctx.modelRegistry));
 }
 
 /** Upsert by executor key — replace in place when found, append otherwise. */
@@ -225,6 +235,7 @@ async function configureDefaultAdvisor(pi: ExtensionAPI, ctx: ExtensionContext):
  * called only after savePerExecutor succeeds (review I2).
  */
 async function addOrEditRoute(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	allRoutes: PerExecutorEntry[],
 	availableModels: Model<Api>[],
@@ -269,10 +280,12 @@ async function addOrEditRoute(
 		return;
 	}
 	setPerExecutor(newRoutes);
+	refreshRoutesDescription(pi, ctx);
 	ctx.ui.notify(msgRouteSaved(executorChoice, advisorChoice, effortChoice), "info");
 }
 
 async function editOrRemoveRoute(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	allRoutes: PerExecutorEntry[],
 	selected: PerExecutorEntry,
@@ -293,15 +306,20 @@ async function editOrRemoveRoute(
 			return;
 		}
 		setPerExecutor(newRoutes);
+		refreshRoutesDescription(pi, ctx);
 		ctx.ui.notify(msgRouteRemoved(selected.executor), "info");
 		return;
 	}
 
 	// action === "edit": re-run the full flow with existing entry pre-selected
-	await addOrEditRoute(ctx, allRoutes, availableModels, selected);
+	await addOrEditRoute(pi, ctx, allRoutes, availableModels, selected);
 }
 
-async function resetAllRoutes(ctx: ExtensionContext, existingRoutes: PerExecutorEntry[]): Promise<void> {
+async function resetAllRoutes(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	existingRoutes: PerExecutorEntry[],
+): Promise<void> {
 	// Nothing to reset — skip confirm step
 	if (existingRoutes.length === 0) return;
 
@@ -318,10 +336,11 @@ async function resetAllRoutes(ctx: ExtensionContext, existingRoutes: PerExecutor
 		return;
 	}
 	setPerExecutor([]);
+	refreshRoutesDescription(pi, ctx);
 	ctx.ui.notify(MSG_ROUTES_RESET, "info");
 }
 
-async function manageRoutes(_pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+async function manageRoutes(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const availableModels = ctx.modelRegistry.getAvailable();
 	const { perExecutor: existingRoutes = [] } = loadAdvisorConfig();
 
@@ -329,12 +348,12 @@ async function manageRoutes(_pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 	if (!choice) return;
 
 	if (choice === ADD_ROUTE_VALUE) {
-		await addOrEditRoute(ctx, existingRoutes, availableModels);
+		await addOrEditRoute(pi, ctx, existingRoutes, availableModels);
 		return;
 	}
 
 	if (choice === RESET_ALL_ROUTES_VALUE) {
-		await resetAllRoutes(ctx, existingRoutes);
+		await resetAllRoutes(pi, ctx, existingRoutes);
 		return;
 	}
 
@@ -344,7 +363,7 @@ async function manageRoutes(_pi: ExtensionAPI, ctx: ExtensionContext): Promise<v
 		return;
 	}
 
-	await editOrRemoveRoute(ctx, existingRoutes, selectedRoute, availableModels);
+	await editOrRemoveRoute(pi, ctx, existingRoutes, selectedRoute, availableModels);
 }
 
 // ── Main command registration ─────────────────────────────────────────────────

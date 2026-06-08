@@ -8,7 +8,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { modelKey } from "./config.js";
 import { ADVISOR_TOOL_NAME, MSG_ADVISOR_DISABLED, msgAdvisorRestored } from "./messages.js";
-import { isExecutorBlocked, isModelBlocked } from "./policy.js";
+import { isExecutorBlocked, isModelBlocked, resolveChainLabels } from "./policy.js";
+import { refreshAdvisorToolDescription } from "./register.js";
 import { getAdvisorEffort, getAdvisorModel } from "./state.js";
 
 interface ReconcileNotify {
@@ -48,6 +49,12 @@ export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
 			return;
 		}
 		reconcileAdvisorTool(pi, ctx, { blocked: isExecutorBlocked(ctx, pi.getThinkingLevel()) });
+		// model_select skips source==='restore', so this is the first chance to
+		// surface the chain available from a restored executor in the description.
+		// Safe even when the tool is stripped — refresh preserves active-tool state.
+		if (ctx?.modelRegistry) {
+			refreshAdvisorToolDescription(pi, resolveChainLabels(ctx.model, ctx.modelRegistry));
+		}
 	});
 }
 
@@ -68,6 +75,10 @@ export function registerModelSelectHandler(pi: ExtensionAPI): void {
 				restored: msgAdvisorRestored(modelKey(advisor), getAdvisorEffort()),
 			},
 		});
+
+		// Keep the advisor tool description in sync with the chain reachable from
+		// the new executor. Re-registration is guarded against redundant churn.
+		refreshAdvisorToolDescription(pi, resolveChainLabels(event.model, ctx.modelRegistry));
 	});
 }
 
