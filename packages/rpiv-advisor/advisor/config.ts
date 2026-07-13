@@ -6,7 +6,7 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 import type { GuidanceFields } from "@juicesharp/rpiv-config";
-import { configPath, loadJsonConfig, saveJsonConfig } from "@juicesharp/rpiv-config";
+import { configPath, loadJsonConfig, saveJsonConfig, validateGuidanceFields } from "@juicesharp/rpiv-config";
 import { EFFORT_ORDINAL } from "./messages.js";
 
 const ADVISOR_CONFIG_PATH = configPath("rpiv-advisor", "advisor.json");
@@ -22,12 +22,28 @@ export interface PerExecutorEntry {
 	effort?: ThinkingLevel;
 }
 
+/**
+ * A per-executor guidance override: one guidance block ({ promptSnippet,
+ * promptGuidelines }) shared by every executor model key in `models`. Grouping
+ * lets variant families (e.g. gpt-5.6-sol/terra/luna) share one block without
+ * repetition. Resolution is field-level: whichever fields the block sets
+ * override the global `guidance`; unset fields fall through to global then to
+ * the built-in defaults.
+ */
+export interface PerExecutorGuidanceEntry {
+	/** Executor model keys ("provider:id") this guidance block applies to. */
+	models: string[];
+	/** Guidance override for the listed executors. */
+	guidance: GuidanceFields;
+}
+
 interface AdvisorConfig {
 	modelKey?: string;
 	effort?: ThinkingLevel;
 	guidance?: GuidanceFields;
 	disabledForModels?: DisabledForModelsEntry[];
 	perExecutor?: PerExecutorEntry[];
+	perExecutorGuidance?: PerExecutorGuidanceEntry[];
 }
 
 export function loadAdvisorConfig(): AdvisorConfig {
@@ -65,6 +81,31 @@ export function validatePerExecutor(value: unknown): PerExecutorEntry[] {
 		if (obj.effort !== undefined && !EFFORT_ORDINAL.includes(obj.effort as ThinkingLevel)) return false;
 		return true;
 	});
+}
+
+/**
+ * Validate `perExecutorGuidance` entries from an unknown value.
+ *
+ * Each entry must be an object with a non-empty `models` array of non-empty
+ * strings and a `guidance` block that, after `validateGuidanceFields`, sets at
+ * least one of `promptSnippet` / `promptGuidelines`. Bad shapes and
+ * guidance-empty entries are dropped silently; valid entries preserve input
+ * order (the resolver picks the first match, so more-specific groups can lead).
+ */
+export function validatePerExecutorGuidance(value: unknown): PerExecutorGuidanceEntry[] {
+	if (!Array.isArray(value)) return [];
+	const result: PerExecutorGuidanceEntry[] = [];
+	for (const entry of value) {
+		if (!entry || typeof entry !== "object") continue;
+		const obj = entry as Record<string, unknown>;
+		if (!Array.isArray(obj.models)) continue;
+		const models = obj.models.filter((m): m is string => typeof m === "string" && m.length > 0);
+		if (models.length === 0) continue;
+		const guidance = validateGuidanceFields(obj.guidance);
+		if (guidance.promptSnippet === undefined && guidance.promptGuidelines === undefined) continue;
+		result.push({ models, guidance });
+	}
+	return result;
 }
 
 export function saveAdvisorConfig(key: string | undefined, effort: ThinkingLevel | undefined): boolean {

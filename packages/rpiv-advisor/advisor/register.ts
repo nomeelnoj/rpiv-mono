@@ -10,7 +10,7 @@ import { type Static, Type } from "typebox";
 import { loadAdvisorConfig } from "./config.js";
 import { type AdvisorCallParams, executeAdvisor } from "./execute.js";
 import { ADVISOR_TOOL_NAME, buildChainSuffix, TOOL_LABEL } from "./messages.js";
-import { MAX_CHAIN_DEPTH } from "./policy.js";
+import { findPerExecutorGuidance, MAX_CHAIN_DEPTH } from "./policy.js";
 
 const AdvisorParams = Type.Object({
 	depth: Type.Optional(
@@ -61,29 +61,62 @@ export function buildAdvisorDescription(chainLabels?: string[]): string {
 // Tracks the description text of the last registration so refreshes can skip
 // redundant re-registration (avoids tool-list churn).
 let lastRegisteredDescription: string | undefined;
+// Tracks the resolved-guidance fingerprint of the last registration so a
+// per-executor guidance change (not just a description change) also triggers
+// re-registration. Paired with lastRegisteredDescription in the refresh guard.
+let lastRegisteredGuidanceKey: string | undefined;
+
+/** Resolved guidance applied to the tool: concrete snippet + guidelines. */
+interface ResolvedGuidance {
+	promptSnippet: string;
+	promptGuidelines: string[];
+}
+
+/**
+ * Resolve the guidance for a given executor. Field-level merge with three
+ * tiers, highest first: the executor's `perExecutorGuidance` override, the
+ * global `guidance` config, then the built-in defaults. Each field resolves
+ * independently, so a per-model block that sets only `promptGuidelines` still
+ * inherits the global-or-default `promptSnippet`. With no executor key and no
+ * config the defaults are returned by reference (guidance tests rely on this).
+ */
+function resolveExecutorGuidance(executorKey?: string): ResolvedGuidance {
+	const global = validateGuidanceFields(loadAdvisorConfig().guidance);
+	const perModel = findPerExecutorGuidance(executorKey);
+	return {
+		promptSnippet: perModel?.promptSnippet ?? global.promptSnippet ?? DEFAULT_PROMPT_SNIPPET,
+		promptGuidelines: perModel?.promptGuidelines ?? global.promptGuidelines ?? DEFAULT_PROMPT_GUIDELINES,
+	};
+}
+
+/** Stable fingerprint of resolved guidance, used only for the refresh guard. */
+function guidanceFingerprint(g: ResolvedGuidance): string {
+	return JSON.stringify([g.promptSnippet, g.promptGuidelines]);
+}
 
 export const DEFAULT_PROMPT_SNIPPET =
-	"Escalate to a stronger reviewer model for guidance when stuck, before substantive work, or before declaring done";
+	"Escalate to a stronger reviewer model for guidance on complex work — when genuinely stuck, at a high-stakes decision, or before declaring done — never as an opening move";
 
 export const DEFAULT_PROMPT_GUIDELINES: string[] = [
-	"Call `advisor` BEFORE substantive work — before writing, before committing to an interpretation, before building on an assumption. Orientation (finding files, fetching a source, seeing what's there) is not substantive work; writing, editing, and declaring an answer are.",
-	"Also call `advisor` when you believe the task is complete. BEFORE this call, make your deliverable durable: write the file, save the result, commit the change. The advisor call takes time; if the session ends during it, a durable result persists and an unwritten one doesn't.",
-	"Also call `advisor` when stuck — errors recurring, approach not converging, results that don't fit — or when considering a change of approach.",
-	"On tasks longer than a few steps, call `advisor` at least once before committing to an approach and once before declaring done. On short reactive tasks where the next action is dictated by tool output you just read, you don't need to keep calling — the advisor adds most of its value on the first call, before the approach crystallizes.",
+	"NEVER call `advisor` as a first step. Always do your own orientation first — read the relevant files, run the obvious checks, and form your own view of the task. Only after you have engaged with the problem yourself may an advisor call be considered. An advisor call before you have done any work is always premature.",
+	"Call `advisor` only when it earns its cost: the task is genuinely complex or high-stakes, you are stuck (errors recurring, approach not converging, results that don't fit), you are weighing a change of approach, or the user explicitly asks you to consult the advisor. Routine or short reactive tasks — where the next action is dictated by tool output you just read — do not need the advisor at all.",
+	"On complex, multi-step tasks, call `advisor` at most once before committing to an approach (after you have oriented yourself, not before) and once before declaring done. Do not consult repeatedly turn-by-turn; the advisor adds most of its value at those two inflection points.",
+	"Before a completion-check `advisor` call, make your deliverable durable first: write the file, save the result, commit the change. The advisor call takes time; if the session ends during it, a durable result persists and an unwritten one doesn't.",
 	"Give the advisor's advice serious weight. If you follow a step and it fails empirically, or you have primary-source evidence that contradicts a specific claim, adapt — a passing self-test is not evidence the advice is wrong, it's evidence your test doesn't check what the advice is checking.",
 	"If you've already retrieved data pointing one way and the advisor points another, don't silently switch — surface the conflict in one more `advisor` call (\"I found X, you suggest Y, which constraint breaks the tie?\"). A reconcile call is cheaper than committing to the wrong branch.",
 ];
 
-export function registerAdvisorTool(pi: ExtensionAPI, chainLabels?: string[]): void {
-	const guidance = validateGuidanceFields(loadAdvisorConfig().guidance);
+export function registerAdvisorTool(pi: ExtensionAPI, chainLabels?: string[], executorKey?: string): void {
+	const guidance = resolveExecutorGuidance(executorKey);
 	const description = buildAdvisorDescription(chainLabels);
 	lastRegisteredDescription = description;
+	lastRegisteredGuidanceKey = guidanceFingerprint(guidance);
 	pi.registerTool({
 		name: ADVISOR_TOOL_NAME,
 		label: TOOL_LABEL,
 		description,
-		promptSnippet: guidance.promptSnippet ?? DEFAULT_PROMPT_SNIPPET,
-		promptGuidelines: guidance.promptGuidelines ?? DEFAULT_PROMPT_GUIDELINES,
+		promptSnippet: guidance.promptSnippet,
+		promptGuidelines: guidance.promptGuidelines,
 		parameters: AdvisorParams,
 
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -105,11 +138,13 @@ export function registerAdvisorTool(pi: ExtensionAPI, chainLabels?: string[]): v
  * re-registration actually resurrected a stripped tool, so a refresh never
  * issues a spurious setActiveTools when the active set was already correct.
  */
-export function refreshAdvisorToolDescription(pi: ExtensionAPI, chainLabels?: string[]): void {
-	if (buildAdvisorDescription(chainLabels) === lastRegisteredDescription) return;
+export function refreshAdvisorToolDescription(pi: ExtensionAPI, chainLabels?: string[], executorKey?: string): void {
+	const nextDescription = buildAdvisorDescription(chainLabels);
+	const nextGuidanceKey = guidanceFingerprint(resolveExecutorGuidance(executorKey));
+	if (nextDescription === lastRegisteredDescription && nextGuidanceKey === lastRegisteredGuidanceKey) return;
 	const active = pi.getActiveTools();
 	const wasActive = active.includes(ADVISOR_TOOL_NAME);
-	registerAdvisorTool(pi, chainLabels);
+	registerAdvisorTool(pi, chainLabels, executorKey);
 	if (!wasActive && pi.getActiveTools().includes(ADVISOR_TOOL_NAME)) {
 		pi.setActiveTools(active);
 	}

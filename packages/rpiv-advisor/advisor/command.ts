@@ -139,7 +139,11 @@ function buildRouteListItems(routes: PerExecutorEntry[]): SelectItem[] {
  * model_select). Guarded against redundant re-registration inside the refresh.
  */
 function refreshRoutesDescription(pi: ExtensionAPI, ctx: ExtensionContext): void {
-	refreshAdvisorToolDescription(pi, resolveChainLabels(ctx.model, ctx.modelRegistry));
+	refreshAdvisorToolDescription(
+		pi,
+		resolveChainLabels(ctx.model, ctx.modelRegistry),
+		ctx.model ? modelKey(ctx.model) : undefined,
+	);
 }
 
 /** Upsert by executor key — replace in place when found, append otherwise. */

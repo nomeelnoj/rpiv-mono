@@ -50,10 +50,15 @@ export function registerAdvisorBeforeAgentStart(pi: ExtensionAPI): void {
 		}
 		reconcileAdvisorTool(pi, ctx, { blocked: isExecutorBlocked(ctx, pi.getThinkingLevel()) });
 		// model_select skips source==='restore', so this is the first chance to
-		// surface the chain available from a restored executor in the description.
-		// Safe even when the tool is stripped — refresh preserves active-tool state.
+		// surface the chain available from a restored executor in the description
+		// AND to apply that executor's per-model guidance override. Safe even when
+		// the tool is stripped — refresh preserves active-tool state.
 		if (ctx?.modelRegistry) {
-			refreshAdvisorToolDescription(pi, resolveChainLabels(ctx.model, ctx.modelRegistry));
+			refreshAdvisorToolDescription(
+				pi,
+				resolveChainLabels(ctx.model, ctx.modelRegistry),
+				ctx.model ? modelKey(ctx.model) : undefined,
+			);
 		}
 	});
 }
@@ -76,9 +81,9 @@ export function registerModelSelectHandler(pi: ExtensionAPI): void {
 			},
 		});
 
-		// Keep the advisor tool description in sync with the chain reachable from
-		// the new executor. Re-registration is guarded against redundant churn.
-		refreshAdvisorToolDescription(pi, resolveChainLabels(event.model, ctx.modelRegistry));
+		// Keep the advisor tool description AND per-model guidance in sync with the
+		// newly-selected executor. Re-registration is guarded against redundant churn.
+		refreshAdvisorToolDescription(pi, resolveChainLabels(event.model, ctx.modelRegistry), modelKey(event.model));
 	});
 }
 

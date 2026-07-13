@@ -5,9 +5,15 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadAdvisorConfig, parseModelKey, validateDisabledForModels, validatePerExecutor } from "./config.js";
+import {
+	loadAdvisorConfig,
+	parseModelKey,
+	validateDisabledForModels,
+	validatePerExecutor,
+	validatePerExecutorGuidance,
+} from "./config.js";
 import { ADVISOR_TOOL_NAME, errModelUnavailable, msgAdvisorRestored, msgAdvisorRestoredInactive } from "./messages.js";
-import { isExecutorBlocked, setDisabledForModels, setPerExecutor } from "./policy.js";
+import { isExecutorBlocked, setDisabledForModels, setPerExecutor, setPerExecutorGuidance } from "./policy.js";
 import { setAdvisorEffort, setAdvisorModel } from "./state.js";
 
 /**
@@ -31,6 +37,7 @@ export function restoreAdvisorState(ctx: ExtensionContext, pi: ExtensionAPI): vo
 
 	setDisabledForModels(validateDisabledForModels(config.disabledForModels));
 	setPerExecutor(validatePerExecutor(config.perExecutor));
+	setPerExecutorGuidance(validatePerExecutorGuidance(config.perExecutorGuidance));
 
 	if (!config.modelKey) return;
 

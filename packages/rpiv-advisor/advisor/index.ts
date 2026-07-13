@@ -24,7 +24,14 @@
  */
 
 export { registerAdvisorCommand } from "./command.js";
-export { loadAdvisorConfig, type PerExecutorEntry, saveAdvisorConfig, savePerExecutor } from "./config.js";
+export {
+	loadAdvisorConfig,
+	type PerExecutorEntry,
+	type PerExecutorGuidanceEntry,
+	saveAdvisorConfig,
+	savePerExecutor,
+	validatePerExecutorGuidance,
+} from "./config.js";
 export { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 export {
 	registerAdvisorBeforeAgentStart,
@@ -35,12 +42,14 @@ export { getInventoryMessage, stableStringify } from "./inventory.js";
 export { ADVISOR_TOOL_NAME } from "./messages.js";
 export {
 	type ChainNode,
+	findPerExecutorGuidance,
 	findPerExecutorOverride,
 	MAX_CHAIN_DEPTH,
 	resolveAdvisorChain,
 	resolveChainLabels,
 	setDisabledForModels,
 	setPerExecutor,
+	setPerExecutorGuidance,
 } from "./policy.js";
 export {
 	buildAdvisorDescription,

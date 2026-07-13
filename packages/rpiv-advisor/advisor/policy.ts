@@ -11,7 +11,14 @@
 
 import type { Api, Model, ThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type DisabledForModelsEntry, modelKey, type PerExecutorEntry, parseModelKey } from "./config.js";
+import type { GuidanceFields } from "@juicesharp/rpiv-config";
+import {
+	type DisabledForModelsEntry,
+	modelKey,
+	type PerExecutorEntry,
+	type PerExecutorGuidanceEntry,
+	parseModelKey,
+} from "./config.js";
 import { EFFORT_ORDINAL, warnChainCycle } from "./messages.js";
 
 /** Hard cap on chain length — a safety rail, mirrored by the tool schema's `maximum`. */
@@ -30,6 +37,7 @@ interface ModelFinder {
 
 let disabledForModelsCache: DisabledForModelsEntry[] = [];
 let perExecutorCache: PerExecutorEntry[] = [];
+let perExecutorGuidanceCache: PerExecutorGuidanceEntry[] = [];
 
 export function setDisabledForModels(models: DisabledForModelsEntry[]): void {
 	disabledForModelsCache = models;
@@ -37,6 +45,22 @@ export function setDisabledForModels(models: DisabledForModelsEntry[]): void {
 
 export function setPerExecutor(entries: PerExecutorEntry[]): void {
 	perExecutorCache = entries;
+}
+
+export function setPerExecutorGuidance(entries: PerExecutorGuidanceEntry[]): void {
+	perExecutorGuidanceCache = entries;
+}
+
+/**
+ * Find the guidance override for an executor model key. Returns the `guidance`
+ * of the first `perExecutorGuidance` entry whose `models` list includes the
+ * key, or undefined when there is no key or no match. Callers merge this over
+ * the global guidance field-by-field, so a partial override (e.g. only
+ * `promptGuidelines`) leaves the other field falling through to global/default.
+ */
+export function findPerExecutorGuidance(executorKey: string | undefined): GuidanceFields | undefined {
+	if (!executorKey) return undefined;
+	return perExecutorGuidanceCache.find((entry) => entry.models.includes(executorKey))?.guidance;
 }
 
 /**
