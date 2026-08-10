@@ -946,6 +946,99 @@ describe("/advisor — routes — remove route", () => {
 	});
 });
 
+// ── Routes — loop back to list ───────────────────────────────────────────────
+
+describe("/advisor — routes — loop back to list", () => {
+	it("removing a route returns to the list; a second route can be removed in one pass", async () => {
+		savePerExecutor([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5" },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker)
+			.mockResolvedValueOnce("anthropic:opus") // remove first route
+			.mockResolvedValueOnce("openai:gpt-5") // then remove second route
+			.mockResolvedValueOnce(null); // then exit
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(REMOVE_VALUE).mockResolvedValueOnce(REMOVE_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(showRouteListPicker).toHaveBeenCalledTimes(3);
+		expect(findPerExecutorOverride(modelA)).toBeUndefined();
+		expect(findPerExecutorOverride(modelGpt)).toBeUndefined();
+		const removedNotifies = vi
+			.mocked(ctx.ui.notify)
+			.mock.calls.filter(([msg]) => String(msg).includes("Route removed"));
+		expect(removedNotifies).toHaveLength(2);
+	});
+
+	it("the re-shown list reflects the removal (removed route absent)", async () => {
+		savePerExecutor([
+			{ executor: "anthropic:opus", advisor: "openai:gpt-5" },
+			{ executor: "openai:gpt-5", advisor: "anthropic:opus" },
+		]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce("anthropic:opus").mockResolvedValueOnce(null);
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(REMOVE_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		const [, secondItems] = vi.mocked(showRouteListPicker).mock.calls[1] as [unknown, { value: string }[]];
+		expect(secondItems.some((item) => item.value === "anthropic:opus")).toBe(false);
+		expect(secondItems.some((item) => item.value === "openai:gpt-5")).toBe(true);
+	});
+
+	it("adding a route returns to the list instead of exiting", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(ADD_ROUTE_VALUE).mockResolvedValueOnce(null);
+		vi.mocked(showRouteExecutorPicker).mockResolvedValueOnce("anthropic:opus");
+		vi.mocked(showRouteAdvisorPicker).mockResolvedValueOnce("anthropic:opus");
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(showRouteListPicker).toHaveBeenCalledTimes(2);
+		// The re-shown list includes the freshly added route.
+		const [, secondItems] = vi.mocked(showRouteListPicker).mock.calls[1] as [unknown, { value: string }[]];
+		expect(secondItems.some((item) => item.value === "anthropic:opus")).toBe(true);
+	});
+
+	it("reset all routes returns to the (now empty) list", async () => {
+		savePerExecutor([{ executor: "anthropic:opus", advisor: "openai:gpt-5" }]);
+
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(RESET_ALL_ROUTES_VALUE).mockResolvedValueOnce(null);
+		vi.mocked(showRouteActionPicker).mockResolvedValueOnce(CONFIRM_RESET_VALUE);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA, modelGpt] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(showRouteListPicker).toHaveBeenCalledTimes(2);
+		const [, secondItems] = vi.mocked(showRouteListPicker).mock.calls[1] as [unknown, { value: string }[]];
+		expect(secondItems.some((item) => item.value === "anthropic:opus")).toBe(false);
+	});
+
+	it("cancelling the route list exits without re-showing it", async () => {
+		vi.mocked(showScopePicker).mockResolvedValueOnce(SCOPE_ROUTES);
+		vi.mocked(showRouteListPicker).mockResolvedValueOnce(null);
+
+		const { captured } = register();
+		const ctx = createMockCtx({ hasUI: true, models: [modelA] });
+		await captured.commands.get("advisor")?.handler("", ctx as never);
+
+		expect(showRouteListPicker).toHaveBeenCalledOnce();
+		expect(showRouteActionPicker).not.toHaveBeenCalled();
+	});
+});
+
 // ── Routes — reset all ────────────────────────────────────────────────────────
 
 describe("/advisor — routes — reset all", () => {

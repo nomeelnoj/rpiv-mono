@@ -2,8 +2,10 @@
  * command — the /advisor slash command. Reads top-down: interactive guard →
  * scope picker (Default advisor | Per-executor routes) → Default branch:
  * model picker → no-advisor → effort picker → applyEnable/applyDisable.
- * Routes branch: list routes → add / edit / remove / reset. The apply helpers
- * and route save helpers persist before mutating in-memory state (review I2).
+ * Routes branch: list routes → add / edit / remove / reset, looping back to
+ * the route list after each action until the list picker is cancelled. The
+ * apply helpers and route save helpers persist before mutating in-memory
+ * state (review I2).
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -321,30 +323,39 @@ async function resetAllRoutes(ctx: ExtensionContext, existingRoutes: PerExecutor
 	ctx.ui.notify(MSG_ROUTES_RESET, "info");
 }
 
+/**
+ * Route-list loop: after every completed action (add, edit, remove, reset)
+ * control returns to the route list — reloaded from config so the list
+ * reflects the change — allowing several operations in one /advisor pass.
+ * Esc/cancel at the route list is the only exit.
+ */
 async function manageRoutes(_pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
 	const availableModels = ctx.modelRegistry.getAvailable();
-	const { perExecutor: existingRoutes = [] } = loadAdvisorConfig();
 
-	const choice = await showRouteListPicker(ctx, buildRouteListItems(existingRoutes));
-	if (!choice) return;
+	for (;;) {
+		const { perExecutor: existingRoutes = [] } = loadAdvisorConfig();
 
-	if (choice === ADD_ROUTE_VALUE) {
-		await addOrEditRoute(ctx, existingRoutes, availableModels);
-		return;
+		const choice = await showRouteListPicker(ctx, buildRouteListItems(existingRoutes));
+		if (!choice) return;
+
+		if (choice === ADD_ROUTE_VALUE) {
+			await addOrEditRoute(ctx, existingRoutes, availableModels);
+			continue;
+		}
+
+		if (choice === RESET_ALL_ROUTES_VALUE) {
+			await resetAllRoutes(ctx, existingRoutes);
+			continue;
+		}
+
+		const selectedRoute = existingRoutes.find((r) => r.executor === choice);
+		if (!selectedRoute) {
+			ctx.ui.notify(errSelectionNotFound(choice), "error");
+			continue;
+		}
+
+		await editOrRemoveRoute(ctx, existingRoutes, selectedRoute, availableModels);
 	}
-
-	if (choice === RESET_ALL_ROUTES_VALUE) {
-		await resetAllRoutes(ctx, existingRoutes);
-		return;
-	}
-
-	const selectedRoute = existingRoutes.find((r) => r.executor === choice);
-	if (!selectedRoute) {
-		ctx.ui.notify(errSelectionNotFound(choice), "error");
-		return;
-	}
-
-	await editOrRemoveRoute(ctx, existingRoutes, selectedRoute, availableModels);
 }
 
 // ── Main command registration ─────────────────────────────────────────────────
