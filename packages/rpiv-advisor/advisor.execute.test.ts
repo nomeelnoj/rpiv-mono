@@ -276,4 +276,28 @@ describe("executeAdvisor — auth envelopes", () => {
 		expect(r?.content[0]).toMatchObject({ text: expect.stringContaining("no API key") });
 		expect(r?.details).toMatchObject({ errorMessage: "no API key for a", advisorModel: "a:m" });
 	});
+
+	it("proceeds when apiKey is missing but the provider is authenticated (e.g. Bedrock AWS profile)", async () => {
+		setAdvisorModel({ provider: "amazon-bedrock", id: "m" } as never);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx();
+		// Credential-chain auth: no apiKey and no auth headers, but the provider is
+		// configured/authenticated (AWS SDK resolves creds from the profile chain).
+		(ctx.modelRegistry.getApiKeyAndHeaders as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+			ok: true,
+			apiKey: undefined,
+			headers: undefined,
+		});
+		(ctx.modelRegistry.getProviderAuthStatus as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+			configured: true,
+			source: "environment",
+			label: "AWS_PROFILE",
+		});
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(1);
+		expect(r?.content[0]).toMatchObject({ type: "text", text: "advice" });
+		expect(r?.details).toMatchObject({ advisorModel: "amazon-bedrock:m" });
+	});
 });

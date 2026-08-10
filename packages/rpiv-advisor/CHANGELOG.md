@@ -14,6 +14,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 - The `/advisor` per-executor routes menu now loops back to the route list after each add, edit, remove, or reset instead of exiting — several routes can be managed in one pass. The list is reloaded from config on each return so it reflects the change; Esc at the route list exits.
 
+### Fixed
+- Advisor no longer fails with "has no API key available" for providers that authenticate without an explicit API key — e.g. Amazon Bedrock via an AWS profile, SSO, IAM keys, or a container/instance role, where the AWS SDK resolves credentials from its own chain. The preflight now treats a missing key as fatal only when the provider has no configured auth at all (via `getProviderAuthStatus`); otherwise the side-call proceeds and relies on the provider's own credential resolution.
+
 ## [1.15.0] - 2026-05-28
 
 ## [1.14.7] - 2026-05-28

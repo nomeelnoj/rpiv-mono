@@ -124,7 +124,16 @@ export async function executeAdvisor(
 		return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, auth.error), auth.error);
 	}
 	if (!auth.apiKey) {
-		return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		// Some providers authenticate without an explicit API key — e.g. Amazon
+		// Bedrock via an AWS profile, SSO, IAM keys, or a container/instance role,
+		// where the AWS SDK resolves credentials from its own chain at request time.
+		// Pi reports these as an authenticated provider that carries no apiKey (and
+		// no auth headers), so a missing apiKey is not proof of missing auth. Only
+		// fail when the provider has no configured auth at all; otherwise let the
+		// request proceed and rely on the provider's own credential resolution.
+		if (!ctx.modelRegistry.getProviderAuthStatus(advisor.provider).configured) {
+			return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		}
 	}
 
 	// Live-read every call — advisor runs mid-turn so any message_end snapshot
