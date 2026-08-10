@@ -16,6 +16,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - Advisor no longer fails with "has no API key available" for providers that authenticate without an explicit API key — e.g. Amazon Bedrock via an AWS profile, SSO, IAM keys, or a container/instance role, where the AWS SDK resolves credentials from its own chain. The preflight now treats a missing key as fatal only when the provider has no configured auth at all (via `getProviderAuthStatus`); otherwise the side-call proceeds and relies on the provider's own credential resolution.
+- Advisor no longer fails with "The toolConfig field must be defined when using toolUse and toolResult content blocks" when consulted in a continued session (`pi --continue`) on Amazon Bedrock. The branch's prior `toolCall`/`toolResult` blocks are now flattened to plain text before the side-call, so the `tools: []` request carries no tool blocks. The tool interaction stays visible to the advisor as text, and adjacent same-role turns are coalesced to preserve clean user/assistant alternation.
 
 ## [1.15.0] - 2026-05-28
 

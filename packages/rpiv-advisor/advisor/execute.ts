@@ -17,7 +17,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { parseModelKey } from "./config.js";
-import { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
+import { ensureUserTailForAdvisor, flattenToolBlocksForAdvisor, stripInflightAdvisorCall } from "./context.js";
 import { getInventoryMessage } from "./inventory.js";
 import {
 	ERR_ABORTED_DETAIL,
@@ -146,7 +146,9 @@ export async function executeAdvisor(
 		ctx.sessionManager.getEntries(),
 		ctx.sessionManager.getLeafId(),
 	);
-	const branchMessages = ensureUserTailForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages)));
+	const branchMessages = ensureUserTailForAdvisor(
+		flattenToolBlocksForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages))),
+	);
 	const inventoryMessage = getInventoryMessage(pi.getAllTools());
 	const messages: Message[] = inventoryMessage ? [inventoryMessage, ...branchMessages] : branchMessages;
 
@@ -158,8 +160,11 @@ export async function executeAdvisor(
 	try {
 		const response = await completeSimple(
 			advisor,
-			// `tools: []` reaffirms the "never calls tools" contract even when
-			// `messages` contains prior toolCall/toolResult blocks (btw.ts:235).
+			// `tools: []` reaffirms the "never calls tools" contract. The branch's
+			// toolCall/toolResult blocks have already been flattened to text by
+			// flattenToolBlocksForAdvisor, so no provider (notably Bedrock Converse,
+			// which requires toolConfig alongside tool blocks) sees tool blocks
+			// without an accompanying tool list.
 			{ systemPrompt: ADVISOR_SYSTEM_PROMPT, messages, tools: [] },
 			{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effort },
 		);

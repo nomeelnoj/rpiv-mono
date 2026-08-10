@@ -3,6 +3,7 @@ import {
 	createMockCtx,
 	createMockPi,
 	makeAssistantMessage,
+	makeToolResult,
 	makeUserMessage,
 } from "@juicesharp/rpiv-test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -101,6 +102,37 @@ describe("executeAdvisor — 4 StopReason branches", () => {
 		expect(serialized).toContain("post-compaction assistant");
 		expect(serialized).not.toContain("OLD RAW PRE-COMPACTION DETAIL");
 		expect(serialized).not.toContain("old raw assistant detail");
+	});
+
+	it("flattens branch toolCall/toolResult blocks so the payload carries no tool blocks", async () => {
+		setAdvisorModel({ provider: "amazon-bedrock", id: "m" } as never);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({
+			branch: buildSessionEntries([
+				makeUserMessage("do the thing"),
+				makeAssistantMessage({
+					text: "on it",
+					toolCalls: [{ id: "c1", name: "web_search", arguments: { q: "x" } }],
+				}),
+				makeToolResult({ toolCallId: "c1", toolName: "web_search", text: "search results here" }),
+				makeAssistantMessage({ text: "done" }),
+			]),
+		});
+
+		await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+
+		const payload = vi.mocked(completeSimple).mock.calls[0]?.[1] as { messages?: unknown[]; tools?: unknown[] };
+		const serialized = JSON.stringify(payload.messages);
+		// No native tool blocks survive into the request.
+		expect(serialized).not.toContain('"toolCall"');
+		expect(serialized).not.toContain('"toolResult"');
+		expect(serialized).not.toContain('"role":"toolResult"');
+		// But the tool interaction is still visible to the advisor as text.
+		expect(serialized).toContain("web_search");
+		expect(serialized).toContain("search results here");
+		expect(payload.tools).toEqual([]);
 	});
 
 	it("aborted stopReason returns cancel envelope", async () => {
