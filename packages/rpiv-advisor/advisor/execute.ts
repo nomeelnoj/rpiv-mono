@@ -6,7 +6,7 @@
  * buildAdvisorResult so the envelope is built in exactly one place.
  */
 
-import type { StopReason, Usage } from "@earendil-works/pi-ai";
+import type { Api, Model, StopReason, Usage } from "@earendil-works/pi-ai";
 import { completeSimple, type Message, type ThinkingLevel } from "@earendil-works/pi-ai";
 import {
 	type AgentToolResult,
@@ -16,6 +16,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { parseModelKey } from "./config.js";
 import { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 import { getInventoryMessage } from "./inventory.js";
 import {
@@ -32,8 +33,35 @@ import {
 	errNoApiKeyDetail,
 	msgConsulting,
 } from "./messages.js";
+import { findPerExecutorOverride } from "./policy.js";
 import { ADVISOR_SYSTEM_PROMPT } from "./prompt.js";
 import { getAdvisorEffort, getAdvisorModel } from "./state.js";
+
+/**
+ * Resolve the advisor model + effort for this call.
+ *
+ * If the executor (`ctx.model`) matches a `perExecutor` entry AND the override's
+ * advisor key resolves in the model registry, the override wins. Otherwise
+ * fall back to the default advisor (`getAdvisorModel`/`getAdvisorEffort`).
+ *
+ * Registry-miss fallback is silent: the advisor call is hot-path and the
+ * default model is already user-selected, so a missing override model is best
+ * handled by quietly using the default rather than failing the call.
+ *
+ * Disable-wins: callers strip the advisor tool when `isExecutorBlocked` returns
+ * true, so this resolver never sees blocked executors during normal flow.
+ */
+function resolveAdvisor(ctx: ExtensionContext): { advisor: Model<Api> | undefined; effort: ThinkingLevel | undefined } {
+	const override = findPerExecutorOverride(ctx.model);
+	if (override) {
+		const parsed = parseModelKey(override.advisor);
+		const overrideModel = parsed ? ctx.modelRegistry.find(parsed.provider, parsed.modelId) : undefined;
+		if (overrideModel) {
+			return { advisor: overrideModel, effort: override.effort ?? getAdvisorEffort() };
+		}
+	}
+	return { advisor: getAdvisorModel(), effort: getAdvisorEffort() };
+}
 
 interface AdvisorDetails {
 	advisorModel?: string;
@@ -79,11 +107,13 @@ export async function executeAdvisor(
 	signal: AbortSignal | undefined,
 	onUpdate: AgentToolUpdateCallback<AdvisorDetails> | undefined,
 ): Promise<AgentToolResult<AdvisorDetails>> {
-	// Snapshot effort once at entry — every result envelope and the API call
-	// itself use this same value so a concurrent setAdvisorEffort() during the
-	// await window cannot desync details.effort from the `reasoning` actually sent.
-	const effort = getAdvisorEffort();
-	const advisor = getAdvisorModel();
+	// Snapshot advisor + effort once at entry — every result envelope and the
+	// API call itself use these same values so a concurrent setAdvisorEffort()
+	// or perExecutor cache change during the await window cannot desync
+	// details.effort/advisorModel from the `reasoning` and model actually sent.
+	// resolveAdvisor consults the perExecutor routing table first and falls
+	// back to the default selection on miss.
+	const { advisor, effort } = resolveAdvisor(ctx);
 	if (!advisor) {
 		return buildErrorResult(undefined, effort, ERR_NO_MODEL, ERR_NO_MODEL_SELECTED);
 	}

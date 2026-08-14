@@ -14,6 +14,35 @@ import { filterItems, isBackspace, isPrintable } from "./fuzzy.js";
 const MAX_VISIBLE_ROWS = 10;
 const NAV_HINT = "type to filter • ↑↓ navigate • enter select • esc cancel";
 
+// ── Scope picker ────────────────────────────────────────────────────────────
+const SCOPE_HEADER_TITLE = "Advisor Tool";
+const SCOPE_HEADER_PROSE =
+	"Set a default advisor for all sessions, or configure per-executor routes that " +
+	"pair specific executor models with dedicated advisor models.";
+
+// ── Route list picker ────────────────────────────────────────────────────────
+const ROUTE_LIST_HEADER_TITLE = "Per-Executor Routes";
+const ROUTE_LIST_HEADER_PROSE =
+	"Routes pair an executor (source) model with a specific advisor model. " +
+	"The first matching route wins; add, edit, or remove routes below.";
+
+// ── Route executor / advisor pickers ─────────────────────────────────────────
+const ROUTE_EXECUTOR_HEADER_TITLE = "Choose Executor";
+const ROUTE_EXECUTOR_HEADER_PROSE = "Choose the executor (source) model this route applies to.";
+
+const ROUTE_ADVISOR_HEADER_TITLE = "Choose Advisor for Route";
+const ROUTE_ADVISOR_HEADER_PROSE = "Choose the advisor model to use when the above executor escalates.";
+
+// ── Route effort picker ───────────────────────────────────────────────────────
+const ROUTE_EFFORT_HEADER_TITLE = "Reasoning Level for Route";
+const ROUTE_EFFORT_HEADER_PROSE =
+	"Choose the reasoning effort level for the advisor on this route. " + "'Inherit' uses the default advisor effort.";
+
+// ── Route action picker (edit/remove submenu + confirm reset) ─────────────────
+const ROUTE_ACTION_HEADER_TITLE = "Route Action";
+const ROUTE_ACTION_HEADER_PROSE = "Edit or remove this route.";
+
+// ── Default advisor pickers ───────────────────────────────────────────────────
 const ADVISOR_HEADER_TITLE = "Advisor Tool";
 const ADVISOR_HEADER_PROSE_1 =
 	"When the active model needs stronger judgment — a complex decision, an ambiguous " +
@@ -116,6 +145,65 @@ function showFilterablePicker(ctx: ExtensionContext, opts: FilterablePickerOptio
 				tui.requestRender();
 			},
 		};
+	});
+}
+
+export async function showScopePicker(ctx: ExtensionContext, items: SelectItem[]): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: SCOPE_HEADER_TITLE,
+		proseLines: [SCOPE_HEADER_PROSE],
+		items,
+	});
+}
+
+export async function showRouteListPicker(ctx: ExtensionContext, items: SelectItem[]): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: ROUTE_LIST_HEADER_TITLE,
+		proseLines: [ROUTE_LIST_HEADER_PROSE],
+		items,
+	});
+}
+
+export async function showRouteExecutorPicker(ctx: ExtensionContext, items: SelectItem[]): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: ROUTE_EXECUTOR_HEADER_TITLE,
+		proseLines: [ROUTE_EXECUTOR_HEADER_PROSE],
+		items,
+	});
+}
+
+export async function showRouteAdvisorPicker(ctx: ExtensionContext, items: SelectItem[]): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: ROUTE_ADVISOR_HEADER_TITLE,
+		proseLines: [ROUTE_ADVISOR_HEADER_PROSE],
+		items,
+	});
+}
+
+/**
+ * Route effort picker. `preferredValue` is the item value to preselect
+ * (e.g. INHERIT_VALUE or a ThinkingLevel string). Falls back to the first
+ * item when preferredValue is undefined or not found in the list.
+ */
+export async function showRouteEffortPicker(
+	ctx: ExtensionContext,
+	items: SelectItem[],
+	preferredValue?: string,
+): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: ROUTE_EFFORT_HEADER_TITLE,
+		proseLines: [ROUTE_EFFORT_HEADER_PROSE],
+		items,
+		preferredValue,
+	});
+}
+
+/** Used for the edit/remove submenu and the "reset all routes" confirm step. */
+export async function showRouteActionPicker(ctx: ExtensionContext, items: SelectItem[]): Promise<string | null> {
+	return showFilterablePicker(ctx, {
+		title: ROUTE_ACTION_HEADER_TITLE,
+		proseLines: [ROUTE_ACTION_HEADER_PROSE],
+		items,
 	});
 }
 

@@ -6,6 +6,17 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-ai";
 
+// Scope sentinels for the /advisor scope picker
+export const SCOPE_DEFAULT = "__scope_default__";
+export const SCOPE_ROUTES = "__scope_routes__";
+
+// Route CRUD sentinels
+export const INHERIT_VALUE = "__inherit__";
+export const ADD_ROUTE_VALUE = "__add_route__";
+export const REMOVE_VALUE = "__remove_route__";
+export const RESET_ALL_ROUTES_VALUE = "__reset_all_routes__";
+export const CONFIRM_RESET_VALUE = "__confirm_reset__";
+
 // Tool identity
 export const ADVISOR_TOOL_NAME = "advisor";
 export const TOOL_LABEL = "Advisor";
@@ -55,5 +66,10 @@ export const msgAdvisorRestoredInactive = (label: string, effort: ThinkingLevel 
 	`Advisor restored: ${label}${effort ? `, ${effort}` : ""} (inactive for current executor)`;
 export const msgAdvisorEnabledInactive = (label: string, effort: ThinkingLevel | undefined) =>
 	`Advisor: ${label}${effort ? `, ${effort}` : ""} (inactive for current executor)`;
+export const msgRouteSaved = (executor: string, advisor: string, effort: ThinkingLevel | undefined) =>
+	`Route saved: ${executor} → ${advisor}${effort ? `, ${effort}` : " (inherit)"}` as string;
+export const msgRouteRemoved = (executor: string) => `Route removed: ${executor}`;
+export const MSG_ROUTES_RESET = "All per-executor routes cleared";
+
 export const msgConsulting = (label: string, effort: ThinkingLevel | undefined) =>
 	`Consulting advisor (${label}${effort ? `, ${effort}` : ""})…`;

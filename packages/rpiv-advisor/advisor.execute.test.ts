@@ -26,7 +26,7 @@ vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => {
 
 import { completeSimple } from "@earendil-works/pi-ai";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
-import { registerAdvisorTool, setAdvisorModel } from "./advisor/index.js";
+import { registerAdvisorTool, setAdvisorEffort, setAdvisorModel, setPerExecutor } from "./advisor/index.js";
 
 function resp(input: { text?: string; stopReason?: "done" | "aborted" | "error" | "toolUse"; errorMessage?: string }) {
 	return {
@@ -132,6 +132,99 @@ describe("executeAdvisor — 4 StopReason branches", () => {
 		const ctx = createMockCtx();
 		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
 		expect(r?.details).toMatchObject({ errorMessage: "empty response" });
+	});
+
+	it("perExecutor override routes to a different advisor model when executor matches", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		const overrideAdvisor = { provider: "b", id: "override-advisor" } as never;
+		const executor = { provider: "x", id: "executor" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("low");
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor", effort: "high" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "override advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, overrideAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[0]).toMatchObject({ provider: "b", id: "override-advisor" });
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[2]).toMatchObject({ reasoning: "high" });
+		expect(r?.details).toMatchObject({ advisorModel: "b:override-advisor", effort: "high" });
+	});
+
+	it("perExecutor override inherits top-level effort when entry omits effort", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		const overrideAdvisor = { provider: "b", id: "override-advisor" } as never;
+		const executor = { provider: "x", id: "executor" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("medium");
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, overrideAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[2]).toMatchObject({ reasoning: "medium" });
+		expect(r?.details).toMatchObject({ advisorModel: "b:override-advisor", effort: "medium" });
+	});
+
+	it("falls back to default advisor when executor doesn't match any perExecutor entry", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		const executor = { provider: "x", id: "unmatched" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("low");
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor", effort: "high" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[0]).toMatchObject({ provider: "a", id: "default-advisor" });
+		expect(r?.details).toMatchObject({ advisorModel: "a:default-advisor", effort: "low" });
+	});
+
+	it("falls back to default advisor when override model is not in registry", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		const executor = { provider: "x", id: "executor" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("low");
+		setPerExecutor([{ executor: "x:executor", advisor: "missing:from-registry", effort: "high" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[0]).toMatchObject({ provider: "a", id: "default-advisor" });
+		expect(r?.details).toMatchObject({ advisorModel: "a:default-advisor", effort: "low" });
+	});
+
+	it("falls back to default advisor when ctx.model is undefined", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ models: [defaultAdvisor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(r?.details).toMatchObject({ advisorModel: "a:default-advisor" });
+	});
+
+	it("picks the first matching perExecutor entry and ignores later duplicates", async () => {
+		const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+		const firstOverride = { provider: "b", id: "first" } as never;
+		const secondOverride = { provider: "c", id: "second" } as never;
+		const executor = { provider: "x", id: "executor" } as never;
+		setAdvisorModel(defaultAdvisor);
+		setPerExecutor([
+			{ executor: "x:executor", advisor: "b:first" },
+			{ executor: "x:executor", advisor: "c:second" },
+		]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ text: "advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, firstOverride, secondOverride, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(r?.details).toMatchObject({ advisorModel: "b:first" });
 	});
 
 	it("thrown error is caught and wrapped in details.errorMessage", async () => {

@@ -18,6 +18,7 @@ Let the model ask a stronger model for a second opinion before it acts. `rpiv-ad
 - **Persisted across sessions** - selection saved at `~/.config/rpiv-advisor/advisor.json` (chmod 0600).
 - **Off by default** - the `advisor` tool is excluded until you pick a model; choose "No advisor" to disable.
 - **Per-executor blocklist** - list executor models in `disabledForModels` (in `advisor.json`) to strip the `advisor` tool when those models drive the session. Entries can be plain strings (block at any effort) or `{ "model": "<provider:id>", "minEffort": "<level>" }` to block only when the executor's effort meets or exceeds the threshold. Available levels, lowest to highest: `minimal`, `low`, `medium`, `high`, `xhigh`.
+- **Per-executor advisor routing** - list `{ "executor": "<provider:id>", "advisor": "<provider:id>", "effort"?: "<level>" }` entries in `perExecutor` (in `advisor.json`) to route specific executors to specific advisor models. Use it to pair models that critique each other well (e.g. opus reviews gpt-5.5, gpt-5.5 reviews opus) without re-picking via `/advisor` between sessions. Optional `effort` falls back to the top-level `effort`; on no-match or registry-miss the default advisor is used. `disabledForModels` still wins — a blocked executor never reaches routing.
 - **Zero-parameter handoff** - calling `advisor` forwards the full serialized conversation branch; no manual prompt needed.
 
 ## Install

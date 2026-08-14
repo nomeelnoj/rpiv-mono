@@ -24,7 +24,7 @@
  */
 
 export { registerAdvisorCommand } from "./command.js";
-export { loadAdvisorConfig, saveAdvisorConfig } from "./config.js";
+export { loadAdvisorConfig, type PerExecutorEntry, saveAdvisorConfig, savePerExecutor } from "./config.js";
 export { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
 export {
 	registerAdvisorBeforeAgentStart,
@@ -33,7 +33,7 @@ export {
 } from "./handlers.js";
 export { getInventoryMessage, stableStringify } from "./inventory.js";
 export { ADVISOR_TOOL_NAME } from "./messages.js";
-export { setDisabledForModels } from "./policy.js";
+export { findPerExecutorOverride, setDisabledForModels, setPerExecutor } from "./policy.js";
 export { DEFAULT_PROMPT_GUIDELINES, DEFAULT_PROMPT_SNIPPET, registerAdvisorTool } from "./register.js";
 export { __resetAdvisorAnnounced, registerAdvisorSessionStart, restoreAdvisorState } from "./restore.js";
 export { getAdvisorEffort, getAdvisorModel, setAdvisorEffort, setAdvisorModel } from "./state.js";

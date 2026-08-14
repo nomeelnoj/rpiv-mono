@@ -54,6 +54,7 @@ beforeEach(async () => {
 	advisor.setAdvisorModel(undefined);
 	advisor.setAdvisorEffort(undefined);
 	advisor.setDisabledForModels([]);
+	advisor.setPerExecutor([]);
 	advisor.__resetAdvisorAnnounced();
 
 	const args = await import("../packages/rpiv-args/args.js");
