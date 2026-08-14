@@ -17,7 +17,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { parseModelKey } from "./config.js";
-import { ensureUserTailForAdvisor, stripInflightAdvisorCall } from "./context.js";
+import { ensureUserTailForAdvisor, flattenToolBlocksForAdvisor, stripInflightAdvisorCall } from "./context.js";
 import { getInventoryMessage } from "./inventory.js";
 import {
 	ERR_ABORTED_DETAIL,
@@ -124,7 +124,16 @@ export async function executeAdvisor(
 		return buildErrorResult(advisorLabel, effort, errMisconfigured(advisorLabel, auth.error), auth.error);
 	}
 	if (!auth.apiKey) {
-		return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		// Some providers authenticate without an explicit API key — e.g. Amazon
+		// Bedrock via an AWS profile, SSO, IAM keys, or a container/instance role,
+		// where the AWS SDK resolves credentials from its own chain at request time.
+		// Pi reports these as an authenticated provider that carries no apiKey (and
+		// no auth headers), so a missing apiKey is not proof of missing auth. Only
+		// fail when the provider has no configured auth at all; otherwise let the
+		// request proceed and rely on the provider's own credential resolution.
+		if (!ctx.modelRegistry.getProviderAuthStatus(advisor.provider).configured) {
+			return buildErrorResult(advisorLabel, effort, errNoApiKey(advisorLabel), errNoApiKeyDetail(advisor.provider));
+		}
 	}
 
 	// Live-read every call — advisor runs mid-turn so any message_end snapshot
@@ -137,7 +146,9 @@ export async function executeAdvisor(
 		ctx.sessionManager.getEntries(),
 		ctx.sessionManager.getLeafId(),
 	);
-	const branchMessages = ensureUserTailForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages)));
+	const branchMessages = ensureUserTailForAdvisor(
+		flattenToolBlocksForAdvisor(stripInflightAdvisorCall(convertToLlm(sessionMessages))),
+	);
 	const inventoryMessage = getInventoryMessage(pi.getAllTools());
 	const messages: Message[] = inventoryMessage ? [inventoryMessage, ...branchMessages] : branchMessages;
 
@@ -149,8 +160,11 @@ export async function executeAdvisor(
 	try {
 		const response = await completeSimple(
 			advisor,
-			// `tools: []` reaffirms the "never calls tools" contract even when
-			// `messages` contains prior toolCall/toolResult blocks (btw.ts:235).
+			// `tools: []` reaffirms the "never calls tools" contract. The branch's
+			// toolCall/toolResult blocks have already been flattened to text by
+			// flattenToolBlocksForAdvisor, so no provider (notably Bedrock Converse,
+			// which requires toolConfig alongside tool blocks) sees tool blocks
+			// without an accompanying tool list.
 			{ systemPrompt: ADVISOR_SYSTEM_PROMPT, messages, tools: [] },
 			{ apiKey: auth.apiKey, headers: auth.headers, signal, reasoning: effort },
 		);

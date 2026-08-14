@@ -154,6 +154,7 @@ export function createMockModelRegistry(models: Model<Api>[] = []) {
 		find: vi.fn((provider: string, id: string) => models.find((m) => m.provider === provider && m.id === id)),
 		getAvailable: vi.fn(() => [...models]),
 		getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "test-key", headers: {} })),
+		getProviderAuthStatus: vi.fn(() => ({ configured: false })),
 	};
 }
 
