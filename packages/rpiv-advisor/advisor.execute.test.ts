@@ -333,3 +333,101 @@ describe("executeAdvisor — auth envelopes", () => {
 		expect(r?.details).toMatchObject({ advisorModel: "amazon-bedrock:m" });
 	});
 });
+
+describe("executeAdvisor — per-executor fallback", () => {
+	const defaultAdvisor = { provider: "a", id: "default-advisor" } as never;
+	const overrideAdvisor = { provider: "b", id: "override-advisor" } as never;
+	const executor = { provider: "x", id: "executor" } as never;
+
+	it("falls back to the default advisor when a per-executor override fails", async () => {
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("low");
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor", effort: "high" }]);
+		vi.mocked(completeSimple)
+			.mockResolvedValueOnce(
+				resp({ stopReason: "error", errorMessage: "Provider stopped with: content_filtered" }) as never,
+			)
+			.mockResolvedValueOnce(resp({ text: "fallback advice" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, overrideAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(completeSimple).mock.calls[0]?.[0]).toMatchObject({ provider: "b", id: "override-advisor" });
+		expect(vi.mocked(completeSimple).mock.calls[1]?.[0]).toMatchObject({ provider: "a", id: "default-advisor" });
+		// Fallback attempt uses the default advisor's own effort, not the override's.
+		expect(vi.mocked(completeSimple).mock.calls[1]?.[2]).toMatchObject({ reasoning: "low" });
+		expect(r?.content[0]).toMatchObject({ type: "text", text: "fallback advice" });
+		expect(r?.details).toMatchObject({
+			advisorModel: "a:default-advisor",
+			effort: "low",
+			fallbackFrom: "b:override-advisor",
+			fallbackReason: "Provider stopped with: content_filtered",
+		});
+	});
+
+	it("returns the fallback error when both the override and default advisor fail", async () => {
+		setAdvisorModel(defaultAdvisor);
+		setAdvisorEffort("medium");
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor" }]);
+		vi.mocked(completeSimple)
+			.mockResolvedValueOnce(resp({ stopReason: "error", errorMessage: "content_filtered" }) as never)
+			.mockResolvedValueOnce(resp({ stopReason: "error", errorMessage: "500 boom" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, overrideAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(2);
+		expect(r?.content[0]).toMatchObject({ text: expect.stringContaining("500 boom") });
+		expect(r?.details).toMatchObject({
+			advisorModel: "a:default-advisor",
+			errorMessage: "500 boom",
+			fallbackFrom: "b:override-advisor",
+			fallbackReason: "content_filtered",
+		});
+	});
+
+	it("does not fall back when the override attempt is aborted by the user", async () => {
+		setAdvisorModel(defaultAdvisor);
+		setPerExecutor([{ executor: "x:executor", advisor: "b:override-advisor" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(resp({ stopReason: "aborted" }) as never);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [defaultAdvisor, overrideAdvisor, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(1);
+		expect(r?.details).toMatchObject({ stopReason: "aborted", advisorModel: "b:override-advisor" });
+		expect(r?.details).not.toHaveProperty("fallbackFrom");
+	});
+
+	it("does not fall back when the failing advisor was the default (no override)", async () => {
+		setAdvisorModel(defaultAdvisor);
+		setPerExecutor([]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(
+			resp({ stopReason: "error", errorMessage: "content_filtered" }) as never,
+		);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx();
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(1);
+		expect(r?.details).toMatchObject({ advisorModel: "a:default-advisor", errorMessage: "content_filtered" });
+		expect(r?.details).not.toHaveProperty("fallbackFrom");
+	});
+
+	it("skips fallback when the override resolves to the same model as the default", async () => {
+		const sameModel = { provider: "a", id: "same" } as never;
+		setAdvisorModel(sameModel);
+		setPerExecutor([{ executor: "x:executor", advisor: "a:same" }]);
+		vi.mocked(completeSimple).mockResolvedValueOnce(
+			resp({ stopReason: "error", errorMessage: "content_filtered" }) as never,
+		);
+		const { pi, captured } = createMockPi();
+		registerAdvisorTool(pi);
+		const ctx = createMockCtx({ model: executor, models: [sameModel, executor] });
+		const r = await captured.tools.get("advisor")?.execute?.("tc", {}, undefined as never, undefined as never, ctx);
+		expect(vi.mocked(completeSimple)).toHaveBeenCalledTimes(1);
+		expect(r?.details).toMatchObject({ advisorModel: "a:same" });
+		expect(r?.details).not.toHaveProperty("fallbackFrom");
+	});
+});
